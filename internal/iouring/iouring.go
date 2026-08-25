@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// IOUring
+// IOUring envelope.
 type IOUring struct {
 	FD     int
 	Params Params
@@ -23,8 +23,8 @@ type IOUring struct {
 	SQMask    *uint32
 	SQEntries *uint32
 	SQFlags   *uint32
-	SQArray   []uint32  // Массив индексов
-	SQ        []SQEntry // Массив самих SQE (64 байта каждый)
+	SQArray   []uint32  // Array of indices
+	SQ        []SQEntry // Array of SQEs themselves (64 bytes each)
 
 	// Completion Queue (CQ)
 	CQRingPtr uintptr
@@ -32,7 +32,7 @@ type IOUring struct {
 	CQTail    *uint32
 	CQMask    *uint32
 	CQEntries *uint32
-	CQ        []CQEntry // Массив CQE (16 байт каждый)
+	CQ        []CQEntry // Array of CQEs (16 bytes each)
 
 	CQLengthMask uint32
 	logger       *blog.Logger
@@ -110,10 +110,10 @@ func New(entries uint32, logger *blog.Logger) (*IOUring, error) {
 
 	var cqRingPtr uintptr
 	if (ring.Params.Features & featSingleMMap) != 0 {
-		// Если ядро поддерживает SINGLE_MMAP, CQ делит память с SQ
+		// If the kernel supports SINGLE_MMAP, CQ shares memory with SQ
 		cqRingPtr = ring.SQRingPtr
 	} else {
-		// Для старых ядер делаем отдельный mmap
+		// For old kernels we do a separate mmap
 		cqPtr, err := unix.Mmap(ring.FD, int64(offCQRing), int(cqRingSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_POPULATE)
 		if err != nil {
 			return nil, fmt.Errorf("mmap CQ: %w", err)
@@ -127,7 +127,7 @@ func New(entries uint32, logger *blog.Logger) (*IOUring, error) {
 	ring.CQMask = (*uint32)(unsafe.Pointer(ring.CQRingPtr + uintptr(ring.Params.CQOff.RingMask)))
 	ring.CQEntries = (*uint32)(unsafe.Pointer(ring.CQRingPtr + uintptr(ring.Params.CQOff.RingEntries)))
 
-	// Массив готовых результатов CQE
+	// Array of ready CQE results
 	ring.CQ = unsafe.Slice(
 		(*CQEntry)(unsafe.Pointer(ring.CQRingPtr+uintptr(ring.Params.CQOff.Cqes))),
 		ring.Params.CQEntries,

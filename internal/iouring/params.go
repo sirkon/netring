@@ -1,16 +1,16 @@
 package iouring
 
 type Params struct {
-	SQEntries    uint32 // Заполняет ядро
-	CQEntries    uint32 // Заполняет ядро
-	Flags        uint32 // Сюда мы пишем setupSQPoll
-	SQThreadCpu  uint32 // CPU-ядро для треда поллинга (если нужен SQ_AFF)
-	SQThreadIdle uint32 // Время простоя треда ядра в мс перед сном
-	Features     uint32 // Фичи ядра (например, SINGLE_MMAP)
+	SQEntries    uint32 // Filled in by the kernel
+	CQEntries    uint32 // Filled in by the kernel
+	Flags        uint32 // Here we write setupSQPoll
+	SQThreadCpu  uint32 // CPU core for the poll thread (if SQ_AFF is needed)
+	SQThreadIdle uint32 // Idle time of the kernel thread in ms before sleeping
+	Features     uint32 // Kernel features (e.g. SINGLE_MMAP)
 	WqFd         uint32
 	Resv         [3]uint32
-	SQOff        TasksOffsets     // Смещения для SQ
-	CQOff        ResponsesOffsets // Смещения для CQ
+	SQOff        TasksOffsets     // Offsets for SQ
+	CQOff        ResponsesOffsets // Offsets for CQ
 }
 
 type TasksOffsets struct {
@@ -22,7 +22,7 @@ type TasksOffsets struct {
 	Dropped     uint32
 	Array       uint32
 	Resv1       uint32
-	Resv2       uint64 // Выравнивание под 64-битную архитектуру Linux
+	Resv2       uint64 // Padding for 64-bit Linux architecture
 }
 
 type ResponsesOffsets struct {

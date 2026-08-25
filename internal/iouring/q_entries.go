@@ -5,40 +5,40 @@ import (
 	"unsafe"
 )
 
-// SQEntry задача для SQ.
+// SQEntry a task for the SQ.
 type SQEntry struct {
-	Opcode   uint8  // Код операции (например, OpAccept)
-	Flags    uint8  // Флаги (например, IOSQE_IO_LINK)
-	Priority uint16 // Приоритет ввода-вывода
-	FD       int32  // Твой сокет / файловый дескриптор
+	Opcode   uint8  // Operation code (e.g. OpAccept)
+	Flags    uint8  // Flags (e.g. IOSQE_IO_LINK)
+	Priority uint16 // I/O priority
+	FD       int32  // Your socket / file descriptor
 
-	// В Си тут union: off (смещение) или addr2
+	// In C this is a union: off (offset) or addr2
 	Off uint64
 
-	// В Си тут union: addr (указатель на буфер/структуру) или splice_off_in
+	// In C this is a union: addr (pointer to buffer/structure) or splice_off_in
 	Addr uint64
 
-	Len uint32 // Длина буфера / количество iovec
+	Len uint32 // Buffer length / number of iovecs
 
-	// В Си тут union: flags распаковывается в op_flags
+	// In C this is a union: flags unpacks into op_flags
 	OpFlags uint32
 
-	UserData uint64 // Твой контекст, который вернется в CQE
+	UserData uint64 // Your context, which will be returned in the CQE
 
-	// В Си тут union: buf_index или buf_group
+	// In C this is a union: buf_index or buf_group
 	BufIndex uint16
 
-	Personality uint16 // ID пользователя для выполнения команды
-	SpliceFdIn  int32  // Для операции splice
+	Personality uint16 // User ID for executing the command
+	SpliceFdIn  int32  // For the splice operation
 
-	// Паддинг/резерв на будущее, чтобы добить структуру ровно до 64 байт
+	// Padding/reserve for the future, to pad the structure to exactly 64 bytes
 	Pad2 [2]uint64
 }
 
 type CQEntry struct {
-	UserData uint64 // Тот самый твой контекст из SQE
-	Res      int32  // Результат сискола (например, количество прочитанных байт или -ERRNO)
-	Flags    uint32 // Флаги ядра
+	UserData uint64 // That same context of yours from the SQE
+	Res      int32  // Result of the syscall (e.g. number of bytes read or -ERRNO)
+	Flags    uint32 // Kernel flags
 }
 
 func init() {

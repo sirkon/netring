@@ -4,11 +4,11 @@ import (
 	"fmt"
 )
 
-// ErrorSQ ошибки добавления в очередь.
+// ErrorSQ defines submission queue errors.
 type ErrorSQ int
 
 const (
-	// ErrSQFull не удалось положить задачу в SQ.
+	// ErrSQFull is returned when a task cannot be placed into the SQ.
 	ErrSQFull ErrorSQ = iota + 1
 )
 

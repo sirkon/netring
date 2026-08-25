@@ -45,7 +45,7 @@ func TestSlots_Playground(t *testing.T) {
 			idx := slots.Add(ttt)
 			cases = append(cases, taskCase{idx, task})
 
-			// Проверяем сразу же, что сохраненный возвращается.
+			// Immediately check that the stored task is returned.
 			storedTask, ok := slots.Get(idx)
 			if !ok {
 				t.Fatalf("task %d not found", idx)
@@ -56,7 +56,7 @@ func TestSlots_Playground(t *testing.T) {
 			}
 		}
 
-		// Проверяем что есть все сохраненные.
+		// Check that all stored tasks are present.
 		for _, cs := range cases {
 			task, ok := slots.Get(cs.idx)
 			if !ok {

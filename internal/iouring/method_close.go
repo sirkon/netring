@@ -9,20 +9,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Close корректно освобождает разделяемую с ядром память и закрывает ринг
+// Close properly releases the memory shared with the kernel and closes the ring
 func (r *IOUring) Close() error {
-	// 1. Проверяем, не был ли ринг уже закрыт (защита от double close)
+	// 1. Check whether the ring has already been closed (protection from double close)
 	if r.FD == 0 || r.FD == math.MaxInt32 {
 		return nil
 	}
 
 	var failed bool
 
-	// 2. Раззамапливаем массив SQEs (физический склад 64-байтных задач)
-	// Размер вычисляем строго так же, как при создании: количество элементов * 64 байта
+	// 2. Unmap the SQEs array (the physical warehouse of 64-byte tasks)
+	// Size is computed exactly as at creation: number of elements * 64 bytes
 	if len(r.SQ) > 0 {
-		sqesSize := len(r.SQ) * 64 // или unsafe.Sizeof(SQEntry{})
-		// Извлекаем сырой указатель на начало слайса в памяти
+		sqesSize := len(r.SQ) * 64 // or unsafe.Sizeof(SQEntry{})
+		// Extract the raw pointer to the beginning of the slice in memory
 		sqesPtr := unsafe.SliceData(r.SQ)
 		err := unix.Munmap(unsafe.Slice((*byte)(unsafe.Pointer(sqesPtr)), sqesSize))
 		if err != nil {
@@ -31,32 +31,32 @@ func (r *IOUring) Close() error {
 		failed = true
 	}
 
-	// 3. Раззамапливаем CQ Ring и SQ Ring
-	// В режиме IORING_FEAT_SINGLE_MMAP (который стандарт для современных ядер Linux)
-	// CQ и SQ делят одну область памяти, поэтому адрес начала у них одинаковый.
-	// Если ты мапил их одним вызовом по размеру максимального из колец, размапливаем его.
+	// 3. Unmap the CQ Ring and SQ Ring
+	// In IORING_FEAT_SINGLE_MMAP mode (which is standard for modern Linux kernels)
+	// CQ and SQ share a single memory region, so their start addresses are identical.
+	// If you mapped them with one call sized to the larger of the two rings, unmap it that way too.
 
-	// Берем базовый указатель на SQ Ring (память управления очередью), который мы сохраняли
+	// Take the base pointer to the SQ Ring (the queue control memory) that we saved
 	if r.SQRingPtr != 0 {
-		// Вычисляем размер SQ кольца управления (индексы Array + смещение)
+		// Compute the size of the SQ control ring (Array indices + offset)
 		sqRingSize := r.Params.SQOff.Array + r.Params.SQEntries*4
 
-		// Если был SINGLE_MMAP, cqRingSize мог быть больше, и мы выравнивали sqRingSize по нему:
-		cqRingSize := r.Params.CQOff.Cqes + r.Params.CQEntries*16 // 16 байт на CQEntry
+		// If SINGLE_MMAP was used, cqRingSize could be larger, and we aligned sqRingSize to it:
+		cqRingSize := r.Params.CQOff.Cqes + r.Params.CQEntries*16 // 16 bytes per CQEntry
 		if (r.Params.Features & featSingleMMap) != 0 {
 			if cqRingSize > sqRingSize {
 				sqRingSize = cqRingSize
 			}
 		}
 
-		// Освобождаем SQ область управления
+		// Free the SQ control region
 		err := unix.Munmap(unsafe.Slice((*byte)(unsafe.Pointer(r.SQRingPtr)), int(sqRingSize)))
 		if err != nil {
 			r.logger.Error(nil, "failed to unmap SQRing buffer", blog.Err(err))
 			failed = true
 		}
 
-		// Если SINGLE_MMAP не было (старое ядро), то CQ мапился отдельно — освобождаем его
+		// If there was no SINGLE_MMAP (old kernel), CQ was mapped separately: unmap it
 		if (r.Params.Features&featSingleMMap) == 0 && r.CQRingPtr != 0 {
 			err = unix.Munmap(unsafe.Slice((*byte)(unsafe.Pointer(r.CQRingPtr)), int(cqRingSize)))
 			if err != nil {
@@ -66,14 +66,14 @@ func (r *IOUring) Close() error {
 		}
 	}
 
-	// 4. Закрываем файловый дескриптор самого ринга.
-	// Это уничтожает контекст io_uring в ядре и останавливает поток SQPOLL.
+	// 4. Close the file descriptor of the ring itself.
+	// This destroys the io_uring context in the kernel and stops the SQPOLL thread.
 	if err := unix.Close(r.FD); err != nil {
 		r.logger.Error(nil, "failed to close io_uring descriptor", blog.Err(err))
 		failed = true
 	}
 
-	// Помечаем ринг как невалидный
+	// Mark the ring as invalid
 	r.FD = math.MaxInt32
 	r.SQRingPtr = 0
 	r.CQRingPtr = 0

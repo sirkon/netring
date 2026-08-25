@@ -1,6 +1,6 @@
 module github.com/sirkon/netring
 
-go 1.26.5
+go 1.27
 
 require (
 	github.com/kelindar/bitmap v1.5.5

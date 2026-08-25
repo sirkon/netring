@@ -2,10 +2,10 @@ package timingwheel
 
 const (
 	invalidIndex = 0xFFFFFFFF
-	numBuckets   = 4096 // Степень двойки для быстрой битовой маски & 4095
+	numBuckets   = 4096 // Power of two for a fast bit mask & 4095
 )
 
-// NodeLinks хранит только топологию и эпоху (SoA). Весит всего 16 байт!
+// NodeLinks stores only topology and epoch (SoA). It weighs just 16 bytes!
 type NodeLinks struct {
 	prev        uint32
 	next        uint32
@@ -13,20 +13,20 @@ type NodeLinks struct {
 	generation  uint32
 }
 
-// NodeValue хранит бизнес-логику и файловый дескриптор
+// NodeValue stores business logic and the file descriptor
 type NodeValue struct {
 	fd       int
-	callback func(fd int) // Наш колбек для отправки close в io_uring
+	callback func(fd int) // Our callback for sending close to io_uring
 }
 
 type TimingWheel struct {
 	currentBucket uint32
-	buckets       [numBuckets]uint32 // Индексы голов списков
+	buckets       [numBuckets]uint32 // Head indices of the lists
 
-	// Плоские предвыделенные массивы (Слайсы) — НУЛЬ фрагментации
+	// Flat preallocated arrays (slices); ZERO fragmentation
 	linksPool  []NodeLinks
 	valuesPool []NodeValue
-	freeNodes  []uint32 // Стек свободных индексов
+	freeNodes  []uint32 // Stack of free indices
 }
 
 func NewTimingWheel(maxConnections int) *TimingWheel {
@@ -36,12 +36,12 @@ func NewTimingWheel(maxConnections int) *TimingWheel {
 		freeNodes:  make([]uint32, maxConnections),
 	}
 
-	// Заполняем buckets дефолтными INVALID значениями
+	// Fill buckets with default INVALID values
 	for i := range numBuckets {
 		tw.buckets[i] = invalidIndex
 	}
 
-	// Инициализируем стек свободных индексов
+	// Initialize the stack of free indices
 	for i := range maxConnections {
 		tw.freeNodes[i] = uint32(i)
 		tw.linksPool[i].prev = invalidIndex
@@ -51,26 +51,26 @@ func NewTimingWheel(maxConnections int) *TimingWheel {
 	return tw
 }
 
-// Tick вызывается раз в секунду из вашего Event Loop (например, по сигналу или syscall.Timerfd)
+// Tick is called once per second from your Event Loop (e.g. via a signal or syscall.Timerfd)
 func (tw *TimingWheel) Tick() {
 	bucketToProcess := tw.currentBucket
-	tw.currentBucket = (tw.currentBucket + 1) & (numBuckets - 1) // Быстрая маска вместо %
+	tw.currentBucket = (tw.currentBucket + 1) & (numBuckets - 1) // Fast mask instead of %
 
 	currentIdx := tw.buckets[bucketToProcess]
-	tw.buckets[bucketToProcess] = invalidIndex // Очищаем сектор
+	tw.buckets[bucketToProcess] = invalidIndex // Clear the bucket
 
-	// Итерируемся ИСКЛЮЧИТЕЛЬНО по легкому слайсу linksPool
+	// Iterate EXCLUSIVELY over the light linksPool slice
 	for currentIdx != invalidIndex {
 		link := &tw.linksPool[currentIdx]
 		nextIdx := link.next
 
-		// Вызываем колбек только если сокет реально протух
+		// Call the callback only if the socket has really expired
 		val := &tw.valuesPool[currentIdx]
 		if val.callback != nil {
-			val.callback(val.fd) // Тут летит асинхронный close в io_uring
+			val.callback(val.fd) // Here the async close flies to io_uring
 		}
 
-		// Освобождаем ячейку
+		// Release the cell
 		tw.releaseNode(currentIdx)
 		currentIdx = nextIdx
 	}
@@ -84,27 +84,27 @@ func (tw *TimingWheel) releaseNode(idx uint32) {
 	tw.freeNodes = append(tw.freeNodes, idx)
 }
 
-// Add вставляет новый сокет в колесо времени
+// Add inserts a new socket into the timing wheel
 func (tw *TimingWheel) Add(ttlSeconds uint32, fd int, cb func(int)) TimerId {
 	if len(tw.freeNodes) == 0 || ttlSeconds == 0 {
 		return TimerId{Index: invalidIndex, Generation: 0}
 	}
 
-	// 1. Достаем свободный индекс из конца слайса за O(1)
+	// 1. Take a free index from the end of the slice in O(1)
 	idx := tw.freeNodes[len(tw.freeNodes)-1]
 	tw.freeNodes = tw.freeNodes[:len(tw.freeNodes)-1]
 
-	// 2. Инициализируем данные (Values)
+	// 2. Initialize the data (Values)
 	tw.valuesPool[idx].fd = fd
 	tw.valuesPool[idx].callback = cb
 
-	// 3. Считаем целевую эпоху (сектор) с быстрой маской
+	// 3. Compute the target epoch (bucket) with a fast mask
 	targetEpoch := (tw.currentBucket + ttlSeconds) & (numBuckets - 1)
 
 	link := &tw.linksPool[idx]
 	link.bucketIndex = targetEpoch
 
-	// 4. Вставляем в ГОЛОВУ двусвязного списка целевой эпохи
+	// 4. Insert into the HEAD of the target epoch's doubly linked list
 	oldHeadIdx := tw.buckets[targetEpoch]
 	link.next = oldHeadIdx
 	link.prev = invalidIndex
@@ -112,7 +112,7 @@ func (tw *TimingWheel) Add(ttlSeconds uint32, fd int, cb func(int)) TimerId {
 	if oldHeadIdx != invalidIndex {
 		tw.linksPool[oldHeadIdx].prev = idx
 	}
-	tw.buckets[targetEpoch] = idx // Теперь эта ячейка — новая голова сектора
+	tw.buckets[targetEpoch] = idx // Now this cell is the new head of the bucket
 
 	return TimerId{Index: idx, Generation: link.generation}
 }

@@ -8,25 +8,25 @@ import (
 )
 
 func Listen(ip string, port int) (int, error) {
-	// 1. Создаем сокет (сразу неблокирующий или блокирующий — под io_uring обычно берут стандартный)
+	// 1. Create the socket (non-blocking or blocking; for io_uring the standard one is usually taken)
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
 	if err != nil {
 		return 0, beer.Wrap(err, "create socket")
 	}
 
-	// 2. Включаем SO_REUSEADDR, чтобы не ждать освобождения порта
+	// 2. Enable SO_REUSEADDR so we don't wait for the port to be released
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
 		return 0, beer.Wrap(err, "set socket flags")
 	}
 
-	// 3. Биндим порт
+	// 3. Bind the port
 	sockAddr := &unix.SockaddrInet4{Port: port}
 	copy(sockAddr.Addr[:], net.ParseIP(ip).To4())
 	if err := unix.Bind(fd, sockAddr); err != nil {
 		return 0, beer.Wrap(err, "bind socket to given addr:port")
 	}
 
-	// 4. Начинаем слушать
+	// 4. Start listening
 	if err := unix.Listen(fd, unix.SOMAXCONN); err != nil {
 		return 0, beer.Wrap(err, "listen to connections")
 	}

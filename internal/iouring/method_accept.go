@@ -6,9 +6,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const OpAccept = 13 // Константа ядра Linux для операции Accept
+const OpAccept = 13 // Linux kernel constant for the Accept operation
 
-// Заведи где-нибудь постоянные структуры, чтобы они не аллоцировались в куче каждый раз
+// Set up persistent structures somewhere so they aren't allocated on the heap each time
 var (
 	dummyAddr unix.RawSockaddrAny
 	dummyLen  uint32 = uint32(unix.SizeofSockaddrAny)
@@ -19,14 +19,14 @@ func (r *IOUring) ExpectAccept(listenFD int32, userData uint64) error {
 	sqe.Opcode = OpAccept
 	sqe.FD = listenFD
 
-	// Передаем честные указатели в ядро
+	// Pass honest pointers to the kernel
 	sqe.Addr = uint64(uintptr(unsafe.Pointer(&dummyAddr)))
 
-	// В io_uring для ACCEPT длина sockaddr передается в поле Off в виде указателя!
-	// (Да-да, Си-шный union мапит это поле как указатель на socklen_t)
+	// In io_uring for ACCEPT the sockaddr length is passed in the Off field as a pointer!
+	// (Yes, the C union maps this field as a pointer to socklen_t)
 	sqe.Off = uint64(uintptr(unsafe.Pointer(&dummyLen)))
 
-	sqe.Len = 0 // Поле Len для accept в современных ядрах не используется
+	sqe.Len = 0 // The Len field for accept is not used on modern kernels
 	sqe.OpFlags = unix.SOCK_CLOEXEC
 	sqe.UserData = userData
 

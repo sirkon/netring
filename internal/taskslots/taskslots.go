@@ -27,7 +27,7 @@ func New[T any](capacity int) (*Slots[T], error) {
 		return nil, beer.New("capacity must be at least 4096")
 	}
 
-	// Количество слов uint64. Для 131072 это 2048 элементов
+	// Number of uint64 words. For 131072 that's 2048 elements
 	wordsCount := capacity >> 6
 	bm := allocAlign(wordsCount)
 
@@ -42,7 +42,7 @@ func New[T any](capacity int) (*Slots[T], error) {
 }
 
 func (s *Slots[T]) Add(v T) uint64 {
-	// Жесткий контроль: если free == 0, места на горячем пути нет физически
+	// Strict control: if free == 0, there is physically no room on the hot path
 	if s.free == 0 {
 		idx := uint64(s.cap) + s.fullCount
 		s.fallback[idx] = v
@@ -50,10 +50,10 @@ func (s *Slots[T]) Add(v T) uint64 {
 		return idx
 	}
 
-	// 1. Привязываем волну к маске кольца слов uint64
+	// 1. Bind the wave to the ring mask of uint64 words
 	wave := s.wave & s.bitmapLenMask
 
-	// Отрезаем срез от текущего слова до конца битмапы
+	// Slice off from the current word to the end of the bitmap
 	bitmp := s.bitmap[wave:]
 
 	localBitIdx, found := bitmp.MinZero()
@@ -62,59 +62,59 @@ func (s *Slots[T]) Add(v T) uint64 {
 	if found {
 		globalSlotIdx = (wave << 6) + uint64(localBitIdx)
 
-		// 🚀 УЛЬТРА-ХАК: Прямая побитовая запись по адресу памяти БЕЗ Bounds Check!
-		// Получаем базовый указатель на начало s.bitmap
+		// ULTRA-HACK: Direct bit write to a memory address WITHOUT Bounds Check!
+		// Get the base pointer to the start of s.bitmap
 		basePtr := unsafe.Pointer(unsafe.SliceData(s.bitmap))
 		wordIdx := globalSlotIdx >> 6
 		bitAt := globalSlotIdx & 63
 
-		// Находим точный адрес нужного uint64 слова: basePtr + wordIdx * 8 байт
+		// Find the exact address of the needed uint64 word: basePtr + wordIdx * 8 bytes
 		wordPtr := (*uint64)(unsafe.Add(basePtr, wordIdx<<3))
-		// Атомарно для этого потока накатываем маску за 1 такт процессора
+		// Atomically for this thread set the mask in one CPU tick
 		*wordPtr |= (uint64(1) << bitAt)
 
 		s.wave += uint64(localBitIdx >> 6)
 	} else {
-		// 2. НЕ НАШЛИ в хвосте: сбрасываем поиск и ищем с самого начала битмапы.
-		// Раз s.free > 0, свободный бит там гарантированно есть!
+		// 2. NOT FOUND in the tail: reset the search and look from the very beginning of the bitmap.
+		// Since s.free > 0, a free bit there is guaranteed to exist!
 		globalZeroIdx, _ := s.bitmap.MinZero()
 		globalSlotIdx = uint64(globalZeroIdx)
 		s.bitmap.Set(globalZeroIdx)
 
-		// Сбрасываем волну на то слово, где только что нашли дырку в начале
+		// Reset the wave to the word where we just found the hole at the start
 		s.wave = globalSlotIdx >> 6
 	}
 
-	// Уменьшаем честный счетчик свободных мест
+	// Decrement the honest counter of free slots
 	s.free--
 
-	// Записываем задачу на горячий путь
+	// Write the task on the hot path
 	s.tasks[globalSlotIdx] = v
 
 	return globalSlotIdx
 }
 
 func (s *Slots[T]) Get(idx uint64) (T, bool) {
-	// Если индекс укладывается в капу — это горячий путь
+	// If the index fits within the capacity, it's the hot path
 	if idx < uint64(s.cap) {
 		basePtr := unsafe.Pointer(unsafe.SliceData(s.bitmap))
 
-		// 1. Делим на 64, чтобы найти индекс uint64-слова в слайсе битмапы
+		// 1. Divide by 64 to find the index of the uint64 word in the bitmap slice
 		wordIdx := idx >> 6
-		// 2. Остаток от деления на 64, чтобы найти позицию бита внутри этого слова
+		// 2. Modulo 64 to find the bit position inside that word
 		bitAt := idx & 63
 
-		// 3. Умножаем wordIdx на 8 (сдвиг << 3), так как uint64 весит 8 байт
+		// 3. Multiply wordIdx by 8 (shift << 3), since uint64 weighs 8 bytes
 		wordPtr := (*uint64)(unsafe.Add(basePtr, wordIdx<<3))
 		blk := *wordPtr
 
-		// Проверяем наличие бита
+		// Check whether the bit is set
 		exists := (blk & (uint64(1) << bitAt)) != 0
 
 		return s.tasks[idx], exists
 	}
 
-	// Иначе — это фолбек мапа
+	// Otherwise, it's the fallback map
 	res, exists := s.fallback[idx]
 	return res, exists
 }
@@ -127,7 +127,7 @@ func (s *Slots[T]) Del(idx uint64) {
 
 	s.free++
 
-	// 🚀 УЛЬТРА-ХАК: Сброс бита в 1 такт вообще без проверок длины массива
+	// ULTRA-HACK: clear the bit in one tick without any length checks
 	basePtr := unsafe.Pointer(unsafe.SliceData(s.bitmap))
 	wordIdx := idx >> 6
 	bitAt := idx & 63
@@ -136,27 +136,27 @@ func (s *Slots[T]) Del(idx uint64) {
 	*wordPtr &^= (uint64(1) << bitAt)
 }
 
-// Reset полностью очищает состояние SlotTable для повторного использования без аллокаций.
+// Reset completely clears the Slots state for reuse without allocations.
 func (s *Slots[T]) Reset() {
 	s.free = s.cap
 	s.wave = 0
 	s.fullCount = 0
 
-	// 1. Быстро зануляем битмапу.
-	// Go оптимизирует этот цикл в эффективную ассемблерную команду memclr / vzeroupper.
+	// 1. Quickly zero out the bitmap.
+	// Go optimizes this loop into an efficient memclr / vzeroupper assembly instruction.
 	clear(s.bitmap)
 
-	// 3. Сбрасываем фолбек-мапу.
-	// Если она разрослась, проще пересоздать её, но если она была пустой, аллокации не будет.
+	// 3. Clear the fallback map.
+	// If it has grown large, it is easier to recreate it, but if it was empty there will be no allocation.
 	clear(s.fallback)
 }
 
 func allocAlign(wordsCount int) []uint64 {
-	// Выделяем память с запасом под выравнивание (64 байта = 8 штук uint64)
+	// Allocate memory with a margin for alignment (64 bytes = 8 uint64s)
 	buf := make([]uint64, wordsCount+8)
 	ptr := uintptr(unsafe.Pointer(&buf[0]))
 	aptr := (ptr + 63) &^ 63
-	gap := (aptr - ptr) >> 3 // Смещение в элементах uint64 (деление на 8 байт)
+	gap := (aptr - ptr) >> 3 // Offset in uint64 elements (division by 8 bytes)
 
 	return buf[int(gap) : int(gap)+wordsCount]
 }

@@ -1,2 +1,2 @@
-// Package taskslots слоты для задач.
+// Package taskslots provides slots for tasks.
 package taskslots

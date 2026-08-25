@@ -6,8 +6,8 @@ import (
 	"github.com/sirkon/blog/beer"
 )
 
-// Push добавляет задачу в SQ.
-// Может возвратить ошибку ErrSQFull если очередь задач забита - именно само значение ErrSQFull, без врапов.
+// Push adds a task to the SQ.
+// May return ErrSQFull if the task queue is full; it returns exactly the ErrSQFull value itself, without wrapping.
 func (r *IOUring) Push(entry SQEntry) error {
 	tail := *r.SQTail
 	head := atomic.LoadUint32(r.SQHead)
@@ -19,14 +19,14 @@ func (r *IOUring) Push(entry SQEntry) error {
 
 	index := tail & mask
 
-	// Записываем данные в mmap-нутую память
+	// Write the data into the mmap'ed memory
 	r.SQ[index] = entry
 	r.SQArray[index] = index
 
-	// Атомарно двигаем хвост
+	// Move the tail atomically
 	atomic.StoreUint32(r.SQTail, tail+1)
 
-	// Атомарно читаем флаги. Если ядро дрыхнет — будим его!
+	// Atomically read the flags. If the kernel is asleep, wake it up!
 	if (atomic.LoadUint32(r.SQFlags) & sqNeedWakup) != 0 {
 		if err := r.Wakeup(); err != nil {
 			return beer.Wrap(err, "wakeup kernel poller")
