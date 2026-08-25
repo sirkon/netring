@@ -19,14 +19,21 @@ type NetRing struct {
 	timerTask chan struct{}
 }
 
+// taskContext resides strictly within the pre-allocated taskslots arena.
+// It uses atomic primitives safely since methods like Recv/Send access it
+// via direct pointers, completely avoiding value copying across threads.
 type taskContext struct {
-	taskState atomic.Uint64
+	taskState atomic.Uint32
 	g         uintptr
 
-	// buf for receive
+	// buf stores the active network data chunk slice.
+	// For reads, the CQ Poller constructs it dynamically from kernel-provided buffers.
 	buf []byte
 }
 
+// ringTask is a lightweight Plain Old Data (POD) structure.
+// It contains no atomic or runtime tracking objects, allowing the Go compiler
+// to pass it through channels via hardware CPU registers with zero heap overhead.
 type ringTask struct {
 	// --- Data for io_uring.SQEntry ---
 	Opcode opcodeType
@@ -36,25 +43,31 @@ type ringTask struct {
 	Offset uint64
 
 	// --- Data for Go runtime synchronization ---
-	G     uintptr       // Address of the sending goroutine (runtime.getg())
-	Res   int32         // Result of the operation from the CQE (bytes count or -ERRNO)
-	State atomic.Uint32 // Atomic task status to prevent races
+	G       uintptr // Address of the sending goroutine (runtime.getg())
+	SlotIdx uint64  // Preserved slot identifier assigned during allocation phase
 }
 
-// There constants are used to represent
+// Finite State Machine (FSM) constants synchronized with taskContext.taskState layout.
 const (
-	taskStateInCore = iota // 0: ringTask went into io_uring / the translator
-	taskStateDone          // 1: The poller already processed the CQE and wrote the result
-	taskStateParked        // 2: The worker successfully entered gopark and went to sleep
+	taskStateInCore uint32 = iota // 0: ringTask went into io_uring / the translator
+	taskStateDone                 // 1: The poller already processed the CQE and wrote the result
+	taskStateParked               // 2: The worker successfully entered gopark and went to sleep
 )
 
 type opcodeType uint32
 
 const (
 	opcodeTypeInvalid opcodeType = iota
+
+	// System opcodes.
+	opcodeTypeReleaseBuffer
+	opcodeTypeTimer
+
+	// Network meta opcodes.
 	opcodeTypeAccept
 	opcodeTypeClose
-	opcodeTypeTimer
+
+	// Network IO opcodes.
 	opcodeTypeRecv
 	opcodeTypeSend
 	// And further...

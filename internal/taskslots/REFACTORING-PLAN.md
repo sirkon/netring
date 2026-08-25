@@ -1,5 +1,9 @@
 # Refactoring Plan: Two-Bitmap XOR Handshake with Protected Fallback Map
 
+## Important.
+
+Addhere no Bound Check policy. Use `unsafe.Add` and such instead of indexes. 
+
 ## Core Architectural Changes
 1. **Thread-Ownership Isolation (Hot Path):** `Slots.bitmap` is strictly owned and written by the **Translator thread** (local L1 cache). No atomics here.
 2. **Asynchronous Release Map:** Introduce `pollerBitmap` strictly written by the **CQ Poller thread** for lock-free, zero-atomic deletions on the hot path.
@@ -136,3 +140,7 @@ func (s *Slots[T]) Add(v T) uint64 {
 The `BenchmarkSlots_Playground` will compile and run flawlessly because:
 * The fallback map is completely thread-safe now.
 * The hot path is now unburdened by heavy L3 cache line invalidations on every transaction, reducing atomics to exactly once per 64-bit word step.
+
+## Important.
+
+Fallback idx must be checked against existing taskIdx. If it collides, a new one (+1) must be tried.

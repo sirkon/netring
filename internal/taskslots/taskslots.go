@@ -2,6 +2,8 @@ package taskslots
 
 import (
 	"math/bits"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/kelindar/bitmap"
@@ -9,12 +11,14 @@ import (
 )
 
 type Slots[T any] struct {
+	mu            sync.Mutex // Guards fallback and fullCount fields ONLY
 	cap           int
-	tasks         []T
-	bitmap        bitmap.Bitmap
-	bitmapLenMask uint64
-	wave          uint64
-	free          int
+	tasks         []T           // Flat pre-allocated array of structures
+	bitmap        bitmap.Bitmap // Owned by Translator (No atomics on hot path)
+	pollerBitmap  []uint64      // Shared with Poller (Atomic updates strictly on step boundary)
+	bitmapLenMask uint64        // Ring mask for uint64 words array boundaries
+	wave          uint64        // Current tracking word index pointer
+	free          int           // Remaining slots on the hot path
 	fallback      map[uint64]T
 	fullCount     uint64
 }
@@ -23,17 +27,17 @@ func New[T any](capacity int) (*Slots[T], error) {
 	if bits.OnesCount(uint(capacity)) != 1 {
 		return nil, beer.New("capacity must be power of 2")
 	}
-	if capacity <= 4096 {
+	if capacity < 4096 {
 		return nil, beer.New("capacity must be at least 4096")
 	}
 
-	// Number of uint64 words. For 131072 that's 2048 elements
 	wordsCount := capacity >> 6
 	bm := allocAlign(wordsCount)
 
 	return &Slots[T]{
 		cap:           capacity,
 		bitmap:        bm,
+		pollerBitmap:  make([]uint64, wordsCount), // Allocated aligned internally if needed, or plain slice
 		bitmapLenMask: uint64(wordsCount - 1),
 		free:          capacity,
 		tasks:         make([]T, capacity),
@@ -41,122 +45,147 @@ func New[T any](capacity int) (*Slots[T], error) {
 	}, nil
 }
 
-func (s *Slots[T]) Add(v T) uint64 {
-	// Strict control: if free == 0, there is physically no room on the hot path
-	if s.free == 0 {
-		idx := uint64(s.cap) + s.fullCount
-		s.fallback[idx] = v
-		s.fullCount++
-		return idx
-	}
-
-	// 1. Bind the wave to the ring mask of uint64 words
-	wave := s.wave & s.bitmapLenMask
-
-	// Slice off from the current word to the end of the bitmap
-	bitmp := s.bitmap[wave:]
-
-	localBitIdx, found := bitmp.MinZero()
-	var globalSlotIdx uint64
-
-	if found {
-		globalSlotIdx = (wave << 6) + uint64(localBitIdx)
-
-		// ULTRA-HACK: Direct bit write to a memory address WITHOUT Bounds Check!
-		// Get the base pointer to the start of s.bitmap
-		basePtr := unsafe.Pointer(unsafe.SliceData(s.bitmap))
-		wordIdx := globalSlotIdx >> 6
-		bitAt := globalSlotIdx & 63
-
-		// Find the exact address of the needed uint64 word: basePtr + wordIdx * 8 bytes
-		wordPtr := (*uint64)(unsafe.Add(basePtr, wordIdx<<3))
-		// Atomically for this thread set the mask in one CPU tick
-		*wordPtr |= (uint64(1) << bitAt)
-
-		s.wave += uint64(localBitIdx >> 6)
-	} else {
-		// 2. NOT FOUND in the tail: reset the search and look from the very beginning of the bitmap.
-		// Since s.free > 0, a free bit there is guaranteed to exist!
-		globalZeroIdx, _ := s.bitmap.MinZero()
-		globalSlotIdx = uint64(globalZeroIdx)
-		s.bitmap.Set(globalZeroIdx)
-
-		// Reset the wave to the word where we just found the hole at the start
-		s.wave = globalSlotIdx >> 6
-	}
-
-	// Decrement the honest counter of free slots
-	s.free--
-
-	// Write the task on the hot path
-	s.tasks[globalSlotIdx] = v
-
-	return globalSlotIdx
-}
-
-func (s *Slots[T]) Get(idx uint64) (T, bool) {
-	// If the index fits within the capacity, it's the hot path
-	if idx < uint64(s.cap) {
-		basePtr := unsafe.Pointer(unsafe.SliceData(s.bitmap))
-
-		// 1. Divide by 64 to find the index of the uint64 word in the bitmap slice
-		wordIdx := idx >> 6
-		// 2. Modulo 64 to find the bit position inside that word
-		bitAt := idx & 63
-
-		// 3. Multiply wordIdx by 8 (shift << 3), since uint64 weighs 8 bytes
-		wordPtr := (*uint64)(unsafe.Add(basePtr, wordIdx<<3))
-		blk := *wordPtr
-
-		// Check whether the bit is set
-		exists := (blk & (uint64(1) << bitAt)) != 0
-
-		return s.tasks[idx], exists
-	}
-
-	// Otherwise, it's the fallback map
-	res, exists := s.fallback[idx]
-	return res, exists
-}
-
+// Del is executed inside the CQ Poller thread.
+// 100% Lock-free and atomic-free on the poller side.
 func (s *Slots[T]) Del(idx uint64) {
 	if idx >= uint64(s.cap) {
+		// Slow Path: Protect fallback map operations with the mutex
+		s.mu.Lock()
 		delete(s.fallback, idx)
+		s.mu.Unlock()
 		return
 	}
 
-	s.free++
-
-	// ULTRA-HACK: clear the bit in one tick without any length checks
-	basePtr := unsafe.Pointer(unsafe.SliceData(s.bitmap))
 	wordIdx := idx >> 6
 	bitAt := idx & 63
 
+	// HOT PATH: NO ATOMICS, NO LOCKS.
+	// Simply set a 1-bit meaning "this slot is now released by the poller".
+	// Cache line remains strictly within the Poller's L1 workspace.
+	basePtr := unsafe.Pointer(unsafe.SliceData(s.pollerBitmap))
 	wordPtr := (*uint64)(unsafe.Add(basePtr, wordIdx<<3))
-	*wordPtr &^= (uint64(1) << bitAt)
+	*wordPtr |= (uint64(1) << bitAt)
 }
 
-// Reset completely clears the Slots state for reuse without allocations.
+// syncWord performs the step-by-step XOR handshake when the wave advances.
+func (s *Slots[T]) syncWord(wordIdx uint64) int {
+	basePollerPtr := unsafe.Pointer(unsafe.SliceData(s.pollerBitmap))
+	pollerWordPtr := (*uint64)(unsafe.Add(basePollerPtr, wordIdx<<3))
+
+	// 1. Raw non-atomic load (MOV assembly hint). Fast L1 cache access.
+	pBits := *pollerWordPtr
+	if pBits == 0 {
+		return 0
+	}
+
+	// 2. Non-atomic XOR locally in the Translator's L1 workspace.
+	// Flipping matching 1s (released by poller) into 0s (free to use for translator).
+	baseTranslatorPtr := unsafe.Pointer(unsafe.SliceData(s.bitmap))
+	translatorWordPtr := (*uint64)(unsafe.Add(baseTranslatorPtr, wordIdx<<3))
+	*translatorWordPtr ^= pBits
+
+	// 3. Lock-free CAS loop to simulate non-existent atomic.XorUint64 in Go.
+	// Deducts only the applied pBits mask chunk from the Poller's tracking register.
+	// If the Poller concurrently added a new bit flag, it is safely retained for the next wave sweep.
+	for {
+		oldVal := pBits
+		newVal := oldVal ^ pBits
+
+		if atomic.CompareAndSwapUint64(pollerWordPtr, oldVal, newVal) {
+			break // Success: Bits cleared without dynamic races
+		}
+
+		// CAS failed: Poller appended new entries. Reload target word state.
+		pBits = *pollerWordPtr
+
+		// Isolate and apply only those bit states that were already cleared on Step 2.
+		pBits &= oldVal
+		if pBits == 0 {
+			break // Nothing left to deduct from the state space
+		}
+	}
+
+	return bits.OnesCount64(pBits)
+}
+
+// Add is executed strictly inside the Single-Threaded Translator Loop.
+// 0 atomics when allocating hot-path slots.
+func (s *Slots[T]) Add(v T) uint64 {
+	// Guarded by mutex, executed only on absolute saturation
+	if s.free == 0 {
+		s.mu.Lock()
+		idx := uint64(s.cap) + s.fullCount
+		s.fallback[idx] = v
+		s.fullCount++
+		s.mu.Unlock()
+		return idx
+	}
+
+	basePtr := unsafe.Pointer(unsafe.SliceData(s.bitmap))
+
+	for {
+		wordIdx := s.wave & s.bitmapLenMask
+
+		// Sync current word with Poller state data before scanning
+		cleared := s.syncWord(wordIdx)
+		s.free += cleared
+
+		// Fetch the current word state using raw pointers (No Bounds Check)
+		wordPtr := (*uint64)(unsafe.Add(basePtr, wordIdx<<3))
+		w := *wordPtr
+
+		// Find trailing zero (empty slot marker where 0 means free)
+		localBitIdx := bits.TrailingZeros64(^w)
+
+		if localBitIdx < 64 {
+			globalSlotIdx := (wordIdx << 6) + uint64(localBitIdx)
+
+			// Mark occupied (1) in Translator's bitmap via raw pointer write
+			*wordPtr |= (uint64(1) << localBitIdx)
+
+			s.free--
+			s.tasks[globalSlotIdx] = v
+			return globalSlotIdx
+		}
+
+		// Current word is fully saturated. Increment wave to step into the next word.
+		s.wave++
+	}
+}
+
+func (s *Slots[T]) Get(idx uint64) (T, bool) {
+	if idx < uint64(s.cap) {
+		basePtr := unsafe.Pointer(unsafe.SliceData(s.bitmap))
+		wordIdx := idx >> 6
+		bitAt := idx & 63
+
+		wordPtr := (*uint64)(unsafe.Add(basePtr, wordIdx<<3))
+		blk := *wordPtr
+
+		exists := (blk & (uint64(1) << bitAt)) != 0
+		return s.tasks[idx], exists
+	}
+
+	s.mu.Lock()
+	res, exists := s.fallback[idx]
+	s.mu.Unlock()
+	return res, exists
+}
+
 func (s *Slots[T]) Reset() {
+	s.mu.Lock()
 	s.free = s.cap
 	s.wave = 0
 	s.fullCount = 0
-
-	// 1. Quickly zero out the bitmap.
-	// Go optimizes this loop into an efficient memclr / vzeroupper assembly instruction.
 	clear(s.bitmap)
-
-	// 3. Clear the fallback map.
-	// If it has grown large, it is easier to recreate it, but if it was empty there will be no allocation.
 	clear(s.fallback)
+	s.mu.Unlock()
 }
 
 func allocAlign(wordsCount int) []uint64 {
-	// Allocate memory with a margin for alignment (64 bytes = 8 uint64s)
 	buf := make([]uint64, wordsCount+8)
 	ptr := uintptr(unsafe.Pointer(&buf[0]))
 	aptr := (ptr + 63) &^ 63
-	gap := (aptr - ptr) >> 3 // Offset in uint64 elements (division by 8 bytes)
-
+	gap := (aptr - ptr) >> 3
 	return buf[int(gap) : int(gap)+wordsCount]
 }
