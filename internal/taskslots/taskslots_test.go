@@ -2,12 +2,18 @@ package taskslots
 
 import (
 	"fmt"
-	"math/rand"
+	"math"
+	"math/bits"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/alecthomas/assert/v2"
 	"github.com/sirkon/blog/beer"
 	"github.com/sirkon/deepequal"
+
+	"github.com/sirkon/netring/internal/pqueue"
 )
 
 const capacity = 1 << 17
@@ -66,142 +72,209 @@ func TestSlots_Playground(t *testing.T) {
 				deepequal.SideBySide(t, fmt.Sprintf("task %x", cs.idx), cs.task, task)
 			}
 		}
+
+		// Now remove a task from slots and check if this idx will be reused.
+		taskIdx := cases[100].idx
+		assert.True(t, taskIdx < slots.cap, "expected slotted task, got a task from the fallback")
+		slots.Del(taskIdx)
+		newIdx := slots.Add(TaskSession{
+			FD:  -100,
+			Buf: make([]byte, 16),
+		})
+		assert.Equal(t, taskIdx, newIdx)
+
+		// Implementation specific. We put the fallback wave back to see if it will be "repaired".
+		assert.True(t, slots.fallbackWave > 0, "expected mutated fallback wave")
+		sampleTask := TaskSession{
+			FD:  -1_000_000,
+			Buf: make([]byte, 16),
+		}
+		fallbackIdx := slots.Add(sampleTask)
+		assert.True(t, fallbackIdx >= slots.cap, "expected the task to end up in the fallback, got it slotted")
+		slots.fallbackWave = 0
+		yetAnotherFallbackIdx := slots.Add(sampleTask)
+		assert.Equal(t, yetAnotherFallbackIdx, fallbackIdx+1)
+
+		// Now, check fallback size is decreased if we removed fallback task.
+		last := cases[len(cases)-1]
+		oldFallbackLen := len(slots.fallback)
+		assert.True(t, last.idx >= slots.cap, "the last task should be in the fallback")
+		slots.Del(last.idx)
+		newFallbackLen := len(slots.fallback)
+		assert.False(
+			t, newFallbackLen >= oldFallbackLen,
+			"the fallback length must be decreased after we remove a fallback task",
+		)
+
+		// Delete "system" task (NOP)
+		// Implementation specific: put match.MaxUint idx into fallbacks and check it won't touch it and
+		// delCount won't change too.
+		func() {
+			slots.fallback[math.MaxUint64] = TaskSession{}
+			fallbackLen := len(slots.fallback)
+			delCount := slots.delCount
+			defer delete(slots.fallback, math.MaxUint64)
+
+			slots.Del(math.MaxUint64)
+			assert.Equal(
+				t,
+				len(slots.fallback), fallbackLen,
+				"fallback length must not change after system deletion",
+			)
+			assert.Equal(
+				t,
+				slots.delCount, delCount,
+				"delete count must not change after system deletion",
+			)
+		}()
 	})
+
+	t.Run("slots capacity guards", func(t *testing.T) {
+		t.Run("only allow the power of two capacity", func(t *testing.T) {
+			_, err := New[[8]byte](88888)
+			assert.Error(t, err, "capacity must be a power of 2")
+		})
+
+		t.Run("capacity must be greater than 4096", func(t *testing.T) {
+			_, err := New[TaskSession](1024)
+			assert.Error(t, err, "capacity must not be lower than 4096")
+		})
+	})
+
+	t.Run("generic type guards", func(t *testing.T) {
+		t.Run("generic type must not be empty", func(t *testing.T) {
+			_, err := New[struct{}](capacity)
+			assert.Error(t, err, "generic type must not be empty")
+		})
+
+		t.Run("generic type must size must be a factor of 8", func(t *testing.T) {
+			_, err := New[[5]byte](capacity)
+			assert.Error(t, err, "generic type must size must be a factor of 8")
+
+			_, err = New[[15]byte](capacity)
+			assert.Error(t, err, "generic type must size must be a factor of 8")
+		})
+	})
+
 }
 
-func BenchmarkSlots_Playground(b *testing.B) {
-	ring := make([]uint64, capacity)
-	ringMask := capacity - 1
+func FuzzSlots_SinglePollerStress(f *testing.F) {
+	// Добавляем начальный seed: capacity кольца слотов
+	f.Add(capacity)
 
-	slots, err := New[TaskSession](capacity)
-	if err != nil {
-		b.Fatal(beer.Wrap(err, "create slots"))
-	}
+	const pqCap = (1 << 12) - 1
 
-	slotsMap := make(map[uint64]TaskSession, capacity)
-
-	b.Run("slots", func(b *testing.B) {
-		b.ReportAllocs()
-
-		for b.Loop() {
-			slots.Reset()
-
-			ringPos := 0
-			for range capacity / 2 {
-				ttt := TaskSession{
-					FD:  ringPos + 1,
-					Buf: nil,
-				}
-				idx := slots.Add(ttt)
-				ring[ringPos] = idx
-				ringPos++
-			}
-
-			var delPos int
-			for range capacity * 8 {
-				ttt := TaskSession{
-					FD:  ringPos + 1,
-					Buf: nil,
-				}
-				idx := slots.Add(ttt)
-				ring[ringPos&ringMask] = idx
-				ringPos++
-
-				delIdx := ring[delPos&ringMask]
-				slots.Del(delIdx)
-				delPos++
-			}
+	f.Fuzz(func(t *testing.T, cap int) {
+		// Ограничиваем мутатор валидными рамками структуры
+		if bits.OnesCount(uint(cap)) != 1 || cap < 4096 || cap > 1<<20 {
+			t.Skip()
 		}
-	})
 
-	b.Run("map", func(b *testing.B) {
-		b.ReportAllocs()
+		pq := pqueue.New[uint64](pqCap)
 
-		for b.Loop() {
-			clear(slotsMap)
-			ringPos := 0
-			for range capacity / 2 {
-				idx := len(slotsMap)
-				slotsMap[uint64(idx)] = TaskSession{FD: ringPos + 1}
-				ring[ringPos] = uint64(idx)
-				ringPos++
-			}
-
-			var delPos int
-			for range capacity * 8 {
-				idx := len(slotsMap)
-				slotsMap[uint64(idx)] = TaskSession{FD: ringPos + 1}
-				ring[ringPos&ringMask] = uint64(idx)
-				ringPos++
-
-				delIdx := ring[delPos&ringMask]
-				delete(slotsMap, delIdx)
-				delPos++
-			}
+		slots, err := New[TaskSession](cap)
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
-}
 
-func BenchmarkSlogtsGet(b *testing.B) {
-	capacities := []int{1 << 14, capacity, 1 << 20, 1 << 24, 1 << 26}
-	for _, customCap := range capacities {
-		b.Run(fmt.Sprintf("capacity-%d", customCap), func(b *testing.B) {
-			slots, err := New[TaskSession](customCap)
-			if err != nil {
-				b.Fatal(beer.Wrap(err, "create slots"))
-			}
-			slotsMap := make(map[uint64]TaskSession, customCap)
-			var idxs []uint64
+		var wg sync.WaitGroup
+		stopChan := make(chan struct{})
 
-			for i := range customCap * 3 / 4 {
-				ttt := TaskSession{
-					FD:  i + 1,
-					Buf: nil,
-				}
-				idx := slots.Add(ttt)
-				idxs = append(idxs, idx)
-				slotsMap[idx] = ttt
-			}
+		// Channel of idx transmission from translator to poller which mimics CQ ring of io_uring.
+		// The capacity of channel is intentionally big to provoke fallbacks.
+		cqBufferChan := make(chan uint64, cap*2)
 
-			rand.Shuffle(len(idxs), func(i, j int) {
-				idxs[i], idxs[j] = idxs[j], idxs[i]
-			})
+		// 1. Translator thread (Strictly Single-Threaded).
+		wg.Go(func() {
+			defer close(cqBufferChan)
+			rnd := NewFastRand(math.MaxUint64)
 
-			var slotsAcc int
-			b.Run("slots", func(b *testing.B) {
-				for b.Loop() {
-					var acc int
-					for _, idx := range idxs {
-						t, ok := slots.Get(idx)
+			var taskID int
+			const flushBarrier = 1 << 14
+			var flushCount int
+			for {
+				_, ok := <-stopChan
+				if !ok {
+					// Got stop signal. Push everything from the queue.
+					for {
+						idx, ok := pq.Pop()
 						if !ok {
-							b.Fatalf("task %d not found", idx)
+							return
 						}
 
-						acc += t.FD
+						cqBufferChan <- idx
 					}
-					slotsAcc = acc
 				}
-			})
 
-			var mapAcc int
-			b.Run("map", func(b *testing.B) {
-				for b.Loop() {
-					var acc int
-					for _, idx := range idxs {
-						t, ok := slotsMap[idx]
+				idx := slots.Add(TaskSession{FD: taskID})
+				for {
+					// Try to push into the queue first.
+					if pq.Push(rnd.NextRangePow2(2048), idx) {
+						break
+					}
+
+					// Nah, queue is full. Take an element from there and push it. Then push the new one
+					// as one slot has been freed.
+
+					oldIdx, _ := pq.Pop()
+					cqBufferChan <- oldIdx
+				}
+
+				// Empty the queue once we hit the barrier.
+				flushCount++
+				if flushCount&(flushBarrier-1) == 0 {
+					for {
+						flushIdx, ok := pq.Pop()
 						if !ok {
-							b.Fatalf("task %d not found", idx)
+							break
 						}
 
-						acc += t.FD
+						select {
+						case cqBufferChan <- flushIdx:
+						}
 					}
-					mapAcc = acc
 				}
-			})
-
-			if slotsAcc != mapAcc {
-				b.Fatalf("slotsAcc(%d) != mapAcc(%d)", slotsAcc, mapAcc)
 			}
 		})
-	}
+
+		// 2. ПОТОК CQ POLLER (Strictly Single-Threaded)
+		wg.Go(func() {
+			for idx := range cqBufferChan {
+				// 100% Lock-free data validation before the removal.
+				task, ok := slots.Get(idx)
+				if !ok {
+					t.Errorf("CRITICAL INVARIANT VIOLATION: task with idx %d has lost!", idx)
+					return
+				}
+				if idx < uint64(cap) && task.FD < 0 {
+					t.Errorf("CRITICAL DATA CORRUPTION: slot %d contains corrupted task memory %#v", idx, task)
+					return
+				}
+
+				slots.Del(idx)
+			}
+		})
+
+		// Fuzzer gets 30-50 millisecs.
+		time.Sleep(30 * time.Millisecond)
+		close(stopChan)
+		wg.Wait()
+	})
+}
+
+type FastRand struct {
+	state uint64
+}
+
+func NewFastRand(seed uint64) *FastRand {
+	return &FastRand{state: seed}
+}
+
+func (r *FastRand) Next() uint64 {
+	r.state = r.state*6364136223846793005 + 1442695040888963407
+	return r.state
+}
+
+func (r *FastRand) NextRangePow2(pow2 uint64) int {
+	return int(r.Next() & (pow2 - 1))
 }
