@@ -159,13 +159,13 @@ func TestSlots_Playground(t *testing.T) {
 }
 
 func FuzzSlots_SinglePollerStress(f *testing.F) {
-	// Добавляем начальный seed: capacity кольца слотов
+	// The only seed.
 	f.Add(capacity)
 
 	const pqCap = (1 << 12) - 1
 
 	f.Fuzz(func(t *testing.T, cap int) {
-		// Ограничиваем мутатор валидными рамками структуры
+		// Allow only good seeds, just because.
 		if bits.OnesCount(uint(cap)) != 1 || cap < 4096 || cap > 1<<20 {
 			t.Skip()
 		}
@@ -193,9 +193,9 @@ func FuzzSlots_SinglePollerStress(f *testing.F) {
 			const flushBarrier = 1 << 14
 			var flushCount int
 			for {
-				_, ok := <-stopChan
-				if !ok {
-					// Got stop signal. Push everything from the queue.
+				select {
+				case <-stopChan:
+					// Got stop signal. Push everything from the queue and exit.
 					for {
 						idx, ok := pq.Pop()
 						if !ok {
@@ -204,6 +204,8 @@ func FuzzSlots_SinglePollerStress(f *testing.F) {
 
 						cqBufferChan <- idx
 					}
+
+				default:
 				}
 
 				idx := slots.Add(TaskSession{FD: taskID})
@@ -237,7 +239,7 @@ func FuzzSlots_SinglePollerStress(f *testing.F) {
 			}
 		})
 
-		// 2. ПОТОК CQ POLLER (Strictly Single-Threaded)
+		// 2. Single CQ POLLER (Strictly Single-Threaded)
 		wg.Go(func() {
 			for idx := range cqBufferChan {
 				// 100% Lock-free data validation before the removal.

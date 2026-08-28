@@ -73,31 +73,6 @@ func New[T any](capacity int) (*Slots[T], error) {
 	}, nil
 }
 
-// Del is executed inside the CQ Poller thread.
-// 100% Lock-free and atomic-free on the poller side.
-func (s *Slots[T]) Del(idx uint64) {
-	switch {
-	case idx > sysIds:
-		return
-	case idx >= s.cap:
-		// Slow Path: Protect fallback map operations with the mutex
-		s.mu.Lock()
-		delete(s.fallback, idx)
-		s.mu.Unlock()
-	}
-
-	wordIdx := idx >> 6
-	bitAt := idx & 63
-
-	// HOT PATH: NO ATOMICS, NO LOCKS.
-	// Simply set a 1-bit meaning "this slot is now released by the poller".
-	// Cache line remains strictly within the Poller's L1 workspace.
-	basePtr := unsafe.Pointer(unsafe.SliceData(s.pollerBitmap))
-	wordPtr := (*uint64)(unsafe.Add(basePtr, wordIdx<<3))
-	*wordPtr |= uint64(1) << bitAt
-	s.delCount++
-}
-
 // Add is executed strictly inside the Single-Threaded Translator Loop.
 // 0 atomics when allocating hot-path slots.
 //
@@ -137,7 +112,7 @@ func (s *Slots[T]) Add(v T) uint64 {
 		if emptyBitIdx < slotsInAWord {
 			// This is the hot path.
 			globalSlotIdx := (wordIdx << 6) + uint64(emptyBitIdx)
-			*wordPtr |= 1 << emptyBitIdx
+			atomic.OrUint64(wordPtr, 1<<emptyBitIdx)
 			s.tasks[globalSlotIdx] = v
 			s.free--
 			return globalSlotIdx
@@ -157,6 +132,31 @@ func (s *Slots[T]) Add(v T) uint64 {
 		// There are released slots.
 		w = s.syncWord(wordPtr, pollerWordPtr)
 	}
+}
+
+// Del is executed inside the CQ Poller thread.
+// 100% Lock-free and atomic-free on the poller side.
+func (s *Slots[T]) Del(idx uint64) {
+	switch {
+	case idx > sysIds:
+		return
+	case idx >= s.cap:
+		// Slow Path: Protect fallback map operations with the mutex
+		s.mu.Lock()
+		delete(s.fallback, idx)
+		s.mu.Unlock()
+	}
+
+	wordIdx := idx >> 6
+	bitAt := idx & 63
+
+	// HOT PATH: NO ATOMICS, NO LOCKS.
+	// Simply set a 1-bit meaning "this slot is now released by the poller".
+	// Cache line remains strictly within the Poller's L1 workspace.
+	basePtr := unsafe.Pointer(unsafe.SliceData(s.pollerBitmap))
+	wordPtr := (*uint64)(unsafe.Add(basePtr, wordIdx<<3))
+	atomic.OrUint64(wordPtr, 1<<bitAt)
+	s.delCount++
 }
 
 func (s *Slots[T]) Get(idx uint64) (T, bool) {
