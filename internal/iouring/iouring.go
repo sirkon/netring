@@ -50,7 +50,7 @@ func New(entries uint32, logger *blog.Logger) (*IOUring, error) {
 		CQLengthMask: entries - 1,
 	}
 
-	ring.Params.Flags = setupSQPoll | setupSQAff //| featSingleMMap
+	ring.Params.Flags = ioUringSetupSQPoll | ioUringSetupSQAff //| featSingleMMap
 	fd, _, errno := syscall.Syscall(
 		unix.SYS_IO_URING_SETUP,
 		uintptr(entries),
@@ -65,7 +65,7 @@ func New(entries uint32, logger *blog.Logger) (*IOUring, error) {
 
 	sqRingSize := ring.Params.SQOff.Array + ring.Params.SQEntries*4
 	cqRingSize := ring.Params.CQOff.Cqes + ring.Params.CQEntries*uint32(unsafe.Sizeof(CQEntry{}))
-	if ring.Params.Features&featSingleMMap != 0 {
+	if ring.Params.Features&ioUringFeatSingleMMap != 0 {
 		if cqRingSize > sqRingSize {
 			sqRingSize = cqRingSize
 		}
@@ -98,7 +98,7 @@ func New(entries uint32, logger *blog.Logger) (*IOUring, error) {
 	sqesSize := int(ring.Params.SQEntries) * 64
 	sqesPtr, err := unix.Mmap(
 		ring.FD,
-		offSQes,
+		sysOffSQes,
 		sqesSize,
 		unix.PROT_READ|unix.PROT_WRITE,
 		unix.MAP_SHARED|unix.MAP_POPULATE,
@@ -109,12 +109,12 @@ func New(entries uint32, logger *blog.Logger) (*IOUring, error) {
 	ring.SQ = unsafe.Slice((*SQEntry)(unsafe.Pointer(&sqesPtr[0])), ring.Params.SQEntries)
 
 	var cqRingPtr uintptr
-	if (ring.Params.Features & featSingleMMap) != 0 {
+	if (ring.Params.Features & ioUringFeatSingleMMap) != 0 {
 		// If the kernel supports SINGLE_MMAP, CQ shares memory with SQ
 		cqRingPtr = ring.SQRingPtr
 	} else {
 		// For old kernels we do a separate mmap
-		cqPtr, err := unix.Mmap(ring.FD, int64(offCQRing), int(cqRingSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_POPULATE)
+		cqPtr, err := unix.Mmap(ring.FD, int64(sysOffCQRing), int(cqRingSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_POPULATE)
 		if err != nil {
 			return nil, fmt.Errorf("mmap CQ: %w", err)
 		}

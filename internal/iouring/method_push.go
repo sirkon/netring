@@ -27,7 +27,7 @@ func (r *IOUring) Push(entry SQEntry) error {
 	atomic.StoreUint32(r.SQTail, tail+1)
 
 	// Atomically read the flags. If the kernel is asleep, wake it up!
-	if (atomic.LoadUint32(r.SQFlags) & sqNeedWakup) != 0 {
+	if (atomic.LoadUint32(r.SQFlags) & ioUringSQNeedWakeup) != 0 {
 		if err := r.Wakeup(); err != nil {
 			return beer.Wrap(err, "wakeup kernel poller")
 		}

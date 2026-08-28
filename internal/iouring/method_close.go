@@ -43,7 +43,7 @@ func (r *IOUring) Close() error {
 
 		// If SINGLE_MMAP was used, cqRingSize could be larger, and we aligned sqRingSize to it:
 		cqRingSize := r.Params.CQOff.Cqes + r.Params.CQEntries*16 // 16 bytes per CQEntry
-		if (r.Params.Features & featSingleMMap) != 0 {
+		if (r.Params.Features & ioUringFeatSingleMMap) != 0 {
 			if cqRingSize > sqRingSize {
 				sqRingSize = cqRingSize
 			}
@@ -57,7 +57,7 @@ func (r *IOUring) Close() error {
 		}
 
 		// If there was no SINGLE_MMAP (old kernel), CQ was mapped separately: unmap it
-		if (r.Params.Features&featSingleMMap) == 0 && r.CQRingPtr != 0 {
+		if (r.Params.Features&ioUringFeatSingleMMap) == 0 && r.CQRingPtr != 0 {
 			err = unix.Munmap(unsafe.Slice((*byte)(unsafe.Pointer(r.CQRingPtr)), int(cqRingSize)))
 			if err != nil {
 				r.logger.Error(nil, "failed to unmap CQRing buffer", blog.Err(err))

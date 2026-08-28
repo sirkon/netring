@@ -60,8 +60,8 @@ The root package was recently moved out of `internal/iouring/` (git shows rename
   via `*blog.Logger` passed into `New`; the poller logs errors via
   `r.logger.Error(nil, ..., blog.Err(errno))`.
 - **Kernel constants are hand-copied** from `linux/io_uring.h`: opcodes (`OPAccept = 13`,
-  `OPRead = 22`), setup flags (`setupSQPoll`, `setupSQAff`, `featSingleMMap`), enter flags
-  (`enterGetEvents`, `enterSQWakeup`). `x/sys/unix` does not export these; if the kernel ABI
+  `OPRead = 22`), setup flags (`ioUringSetupSQPoll`, `ioUringSetupSQAff`, `ioUringFeatSingleMMap`), enter flags
+  (`ioUringEnterGetEvents`, `ioUringEnterSQWakeup`). `x/sys/unix` does not export these; if the kernel ABI
   changes, update `internal/iouring/consts.go` and the `SQEntry` layout *together*.
 - **SQEntry must stay exactly 64 bytes** (mirrors `struct io_uring_sqe`, including `Pad2`).
   `CQEntry` is 16 bytes. The ring code assumes both sizes.
