@@ -15,7 +15,7 @@ import (
 // section 8) on nr's io_uring, so Recv can drive real traffic through it.
 func provisionTinyRing(t *testing.T, nr *NetRing) {
 	t.Helper()
-	pbr, err := nr.r.RegisterBufferRing(uint16(SizeClassTiny), 4, SizeClassToBytes(SizeClassTiny))
+	pbr, err := nr.r.RegisterBufferRing(uint16(SizeClassTiny), 4, SizeClassTiny.Size())
 	if err != nil {
 		t.Skipf("pbuf rings not supported by this kernel: %v", err)
 	}

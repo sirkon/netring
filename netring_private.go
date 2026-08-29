@@ -66,6 +66,7 @@ const (
 	// Network meta opcodes.
 	opcodeTypeAccept
 	opcodeTypeClose
+	opcodeTypeConnect
 
 	// Network IO opcodes.
 	opcodeTypeRecv

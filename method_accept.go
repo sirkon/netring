@@ -37,7 +37,7 @@ func (nr *NetRing) Accept(listenFD int) (int32, error) {
 	// FIFO in the SQ. The channel send may block on
 	// backpressure; nothing can complete before the task reaches the translator,
 	// so that is fine.
-	nr.chans[listenFD%len(nr.chans)] <- task
+	nr.chans[listenFD&(len(nr.chans)-1)] <- task
 
 	// Suspend until the CQ poller delivers the result. Both the slept and the
 	// never-slept paths return here with the results already in the cell.

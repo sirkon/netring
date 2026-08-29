@@ -42,7 +42,6 @@ func (nr *NetRing) Send(fd int, data []byte) (int, error) {
 		Len:     uint32(len(data)), // must fit uint32; a send this size is absurd in practice
 		BGID:    0,
 		Offset:  0,
-		G:       getg(),
 		Ctx:     cell,
 		Payload: bufPtr,
 	}
@@ -51,7 +50,7 @@ func (nr *NetRing) Send(fd int, data []byte) (int, error) {
 	// the SQ, so ordering is preserved. The channel send may block on
 	// backpressure; nothing can complete before the task reaches the
 	// translator, so that is fine.
-	nr.chans[fd%len(nr.chans)] <- task
+	nr.chans[fd&(len(nr.chans)-1)] <- task
 
 	// 7. Suspend until the CQ poller delivers the result. Both the slept and
 	// the never-slept paths return here with the results already in the cell.

@@ -35,7 +35,7 @@ func (nr *NetRing) Close(fd int) error {
 	// Submit into the per-descriptor shard: it keeps all operations of one fd
 	// FIFO in the SQ, so a close lands strictly after any in-flight op it must
 	// cancel.
-	nr.chans[fd%len(nr.chans)] <- task
+	nr.chans[fd&(len(nr.chans)-1)] <- task
 
 	// Suspend until the CQ poller delivers the result. Both the slept and the
 	// never-slept paths return here with the results already in the cell.

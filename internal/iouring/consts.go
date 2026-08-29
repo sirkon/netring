@@ -37,11 +37,12 @@ const (
 // include/uapi/linux/io_uring.h enum io_uring_op. The values follow the enum declaration
 // order, not anything you'd guess from the names: recount them whenever the ABI changes.
 const (
-	OpAccept = 13 // IORING_OP_ACCEPT
-	OpClose  = 19 // IORING_OP_CLOSE
-	OpRead   = 22 // IORING_OP_READ (NOT RECV; the task doc mixed exactly these two up)
-	OpSend   = 26 // IORING_OP_SEND
-	OpRecv   = 27 // IORING_OP_RECV
+	OpAccept  = 13 // IORING_OP_ACCEPT
+	OpConnect = 16 // IORING_OP_CONNECT (13 ACCEPT, 14 ASYNC_CANCEL, 15 LINK_TIMEOUT)
+	OpClose   = 19 // IORING_OP_CLOSE
+	OpRead    = 22 // IORING_OP_READ (NOT RECV; the task doc mixed exactly these two up)
+	OpSend    = 26 // IORING_OP_SEND
+	OpRecv    = 27 // IORING_OP_RECV
 )
 
 const (

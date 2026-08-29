@@ -46,6 +46,12 @@ func (nr *NetRing) dispatch(task ringTask) {
 			nr.abortIssuer(slotIdx, err)
 		}
 
+	case opcodeTypeConnect:
+		slotIdx := nr.slots.Add(task.Ctx)
+		if err := nr.r.ExpectConnect(int(task.FD), task.Payload, uint32(task.Addr), slotIdx); err != nil {
+			nr.abortIssuer(slotIdx, err)
+		}
+
 	case opcodeTypeRecv:
 		slotIdx := nr.slots.Add(task.Ctx)
 		if err := nr.r.ExpectRecv(task.FD, task.BGID, task.Len, slotIdx); err != nil {

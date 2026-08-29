@@ -66,7 +66,7 @@ func New(entries uint32, logger *blog.Logger, options ...OptionSetter) (*NetRing
 
 		slots: opts.slots,
 		chans: make([]chan ringTask, opts.tasksChanShards),
-		pbrs:  make([]*iouring.ProvidedBufferRing, 5),
+		pbrs:  make([]*iouring.ProvidedBufferRing, sizeClassesCount),
 		pool: sync.Pool{
 			New: func() any { return new(taskCell) },
 		},
@@ -87,9 +87,19 @@ func New(entries uint32, logger *blog.Logger, options ...OptionSetter) (*NetRing
 // group id (bgid) AND the index into NetRing.pbrs.
 type SizeClass uint64
 
+const sizeClassesCount = 5
+
+var sizeClassesCapacity = [sizeClassesCount]uint32{
+	SizeClassTiny:   128,
+	SizeClassSmall:  512,
+	SizeClassMedium: 1024,
+	SizeClassBig:    4096,
+	SizeClassHuge:   16384,
+}
+
 const (
 	// SizeClassTiny for 128 bytes buffer.
-	SizeClassTiny SizeClass = iota + 1
+	SizeClassTiny SizeClass = iota
 	// SizeClassSmall for 512 bytes buffer.
 	SizeClassSmall
 	// SizeClassMedium for 1024 bytes buffer.
@@ -100,21 +110,12 @@ const (
 	SizeClassHuge
 )
 
-func (s SizeClass) Size() int {
-	switch s {
-	case SizeClassTiny:
-		return 128
-	case SizeClassSmall:
-		return 512
-	case SizeClassMedium:
-		return 1024
-	case SizeClassBig:
-		return 4096
-	case SizeClassHuge:
-		return 16384
-	default:
-		return 0
+func (s SizeClass) Size() uint32 {
+	if int(s) < len(sizeClassesCapacity) {
+		return sizeClassesCapacity[s]
 	}
+
+	return 0
 }
 
 func (s SizeClass) String() string {

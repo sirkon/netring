@@ -23,9 +23,6 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 	if capacity == 0 {
 		return nil, beer.Newf("recv: %s", sizeClass)
 	}
-	if nr.pbrs[sizeClass] == nil {
-		return nil, beer.Newf("recv: size class %d is not provisioned", uint16(sizeClass))
-	}
 
 	// 3. Arm the cell: the arm protocol must precede the
 	// channel send with no exceptions, otherwise the poller could race a
@@ -39,8 +36,8 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 		Opcode:  opcodeTypeRecv,
 		FD:      int32(fd),
 		Addr:    0,
-		Len:     uint32(capacity),
-		BGID:    uint16(sizeClass),
+		Len:     capacity,
+		BGID:    uint16(sizeClass - 1),
 		Offset:  0,
 		Ctx:     cell,
 		Payload: nil,
@@ -50,7 +47,7 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 	// block on backpressure; nothing can complete before the task reaches the
 	// translator, so that is fine. fd was validated >= 0
 	// above, so the modulo cannot be negative.
-	nr.chans[fd%len(nr.chans)] <- task
+	nr.chans[fd&(len(nr.chans)-1)] <- task
 
 	// 6. Suspend until the CQ poller delivers the result. Both the slept and
 	// the never-slept paths return here with the result already in the cell.
