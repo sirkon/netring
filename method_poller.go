@@ -5,13 +5,14 @@ import (
 	"runtime"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/sirkon/blog"
 	"golang.org/x/sys/unix"
 )
 
 // Poll starts CQ polling.
-func (r *NetRing) Poll(
+func (nr *NetRing) Poll(
 	stop *atomic.Bool,
 	finish chan struct{},
 	options ...CQPollerOption,
@@ -40,7 +41,7 @@ func (r *NetRing) Poll(
 			break
 		}
 
-		resp, ready := r.r.GetTask()
+		resp, ready := nr.r.GetTask()
 		if !ready {
 			spinCount++
 
@@ -53,12 +54,12 @@ func (r *NetRing) Poll(
 			// The limit was not reached, total silence it is.
 			// Ask the kernel to wake us up for new events.
 			spinCount = 0
-			if err := r.r.WaitEvents(); err != nil {
+			if err := nr.r.WaitEvents(); err != nil {
 				if errors.Is(err, unix.EINTR) {
 					continue
 				}
 
-				r.logger.Error(nil, "io_uring_enter hybrid freeze failed", blog.Err(err))
+				nr.logger.Error(nil, "io_uring_enter hybrid freeze failed", blog.Err(err))
 				runtime.Gosched()
 			}
 		}
@@ -66,10 +67,52 @@ func (r *NetRing) Poll(
 		// Hot path.
 		spinCount = 0
 
-		// TODO determine whether it that timer task or just regular task. In case it is a time task
-		//      do what's been instructed in ARCH.md. In case of regular task get a respective slot and call
-		//      goready as has been written in ARCH.md.
-		_ = resp
+		// Dispatch the CQE: the poller needs no opcode
+		// knowledge, res and flags are interpreted by the woken worker method.
+		switch {
+		case resp.UserData == periodicalTimerTaskID:
+			// The timer subsystem is out of scope for 031-034; park the
+			// notification into the buffered channel and keep draining.
+			select {
+			case nr.timerTask <- struct{}{}:
+			default:
+			}
+			continue
+
+		case resp.UserData == noWaiterTaskID:
+			// Nobody waits, nothing to dispatch (fire-and-forget opcodes).
+			// The close result itself is meaningless at this point: nobody
+			// is listening, and reporting an error for an fd that no longer
+			// exists would be noise; a failure is still logged, at warning
+			// level, for diagnostics.
+			if resp.Res < 0 {
+				nr.logger.Warn(nil, "netring: fire-and-forget operation completed with an error",
+					blog.Int("result", int(resp.Res)))
+			}
+			continue
+		}
+
+		cell, ok := nr.slots.Get(resp.UserData)
+		if !ok {
+			// Defensive: must not happen.
+			nr.logger.Error(nil, "netring: CQE carries an unknown slot index",
+				blog.Uint64("slot", resp.UserData))
+			continue
+		}
+		nr.slots.Del(resp.UserData)
+
+		// Results are written BEFORE the CAS: the
+		// seq-cst Swap/CAS pair on taskState is the release/acquire edge.
+		cell.res = resp.Res
+		cell.flags = resp.Flags
+
+		if !cell.taskState.CompareAndSwap(taskStateInCore, taskStateDone) {
+			// The state is Parked, written strictly after the runtime placed
+			// the goroutine into _Gwaiting: goready is always safe, the
+			// "goready: bad g state" panic is structurally impossible
+			//. Convert and call in one expression.
+			goready((*g)(unsafe.Pointer(cell.g)), parkTraceSkip)
+		}
 	}
 }
 

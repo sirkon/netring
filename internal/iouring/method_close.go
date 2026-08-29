@@ -27,8 +27,8 @@ func (r *IOUring) Close() error {
 		err := unix.Munmap(unsafe.Slice((*byte)(unsafe.Pointer(sqesPtr)), sqesSize))
 		if err != nil {
 			r.logger.Error(nil, "failed to unmap SQes buffer", blog.Err(err))
+			failed = true
 		}
-		failed = true
 	}
 
 	// 3. Unmap the CQ Ring and SQ Ring

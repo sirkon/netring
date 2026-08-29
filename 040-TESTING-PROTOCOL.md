@@ -141,7 +141,7 @@ func RunVerificationTest(nr *netring.NetRing, fd int, totalGoroutines int, reque
 				}
 
 				// 4. Await streaming package delivery leveraging kernel buffer selection
-				respBytes, err := nr.Recv(fd, netring.SizeClassTiny) // SizeClassTiny is 128B (holds 37B frame easily) [INDEX]
+				respBytes, err := nr.Recv(fd, netring.SizeClassTiny) // SizeClassTiny is 128B (holds 37B frame easily)
 				if err != nil {
 					errChan <- fmt.Errorf("[G-%d][M-%d] recv failed: %w", goroutineID, mIdx, err)
 					return

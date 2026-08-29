@@ -1,7 +1,6 @@
 package iouring
 
 import (
-	"fmt"
 	"unsafe"
 )
 
@@ -41,6 +40,14 @@ type CQEntry struct {
 	Flags    uint32 // Kernel flags
 }
 
-func init() {
-	fmt.Println(unsafe.Sizeof(SQEntry{}))
-}
+// Compile-time guards: the mmap'ed ring math (and the kernel) assumes these exact sizes.
+
+const (
+	sizeofSQEntry = 64
+	sizeofCQEntry = 16
+
+	_ = uint(unsafe.Sizeof(SQEntry{})) - sizeofSQEntry // fails if SQEntry is not exactly 64 bytes
+	_ = sizeofSQEntry - uint(unsafe.Sizeof(SQEntry{}))
+	_ = uint(unsafe.Sizeof(CQEntry{})) - sizeofCQEntry // fails if CQEntry is not exactly 16 bytes
+	_ = sizeofCQEntry - uint(unsafe.Sizeof(CQEntry{}))
+)

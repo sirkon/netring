@@ -45,7 +45,7 @@ go test ./internal/taskslots/ -bench=. -benchmem   # perf micro-benchmarks
 
 | Path | Package | What it is |
 |---|---|---|
-| `*.go` (root) | `netring` | The io_uring envelope: `IOUring` struct + ring mmap setup + methods. Split into `internal/iouring/iouring.go` (setup), `iouring_method_*.go` (Push/Accept/Close/Wakeup), `netring_poller.go`, `internal/iouring/q_entries.go` (SQEntry/CQEntry), `internal/iouring/consts.go`, `internal/iouring/params.go`, `internal/iouring/errors.go`, `poller_options.go` |
+| `*.go` (root) | `netring` | The io_uring envelope: `IOUring` struct + ring mmap setup + methods. Split into `internal/iouring/iouring.go` (setup), `iouring_method_*.go` (Push/Accept/Close/Wakeup), `method_poller.go`, `internal/iouring/q_entries.go` (SQEntry/CQEntry), `internal/iouring/consts.go`, `internal/iouring/params.go`, `internal/iouring/errors.go`, `internal/iouring/pbuf.go` (kernel provided buffer rings), `poller_options.go` |
 | `internal/sysnet` | `sysnet` | Raw syscalls that must return fd values (stdlib would swallow them). Only `Listen(ip, port) (int, error)` — **IPv4 only** |
 | `internal/taskslots` | `taskslots` | Zero-allocation bytable for in-flight tasks keyed by `uint64` index. The only package with tests/benchmarks |
 | `internal/timingwheel` | `timingwheel` | SoA (struct-of-arrays) resource-expiry wheel for connection TTL timeouts |
@@ -142,11 +142,31 @@ The root package was recently moved out of `internal/iouring/` (git shows rename
 
 ## Misc
 
-- `internal/iouring/q_entries.go` has `func init() { fmt.Println(unsafe.Sizeof(SQEntry{})) }` —
-  prints `64` on any process that imports this package. Debug leftover; don't rely on it,
-  feel free to remove once it doesn't break anything (the tests do not depend on it).
+- `internal/iouring/q_entries.go` and `pbuf.go` carry compile-time size guards
+  (`const _ = unsafe.Sizeof(...) - N`) instead of the old `init() { fmt.Println(...) }` debug
+  leftover, which has been removed.
 - `go.mod`: `go 1.27`, requires `x/sys v0.47.0`, `kelindar/bitmap v1.5.5`,
   `sirkon/blog` + `sirkon/deepequal` (test-only for deep equality).
 - Benchmarks currently show `Slots` ~2-5x faster than map and always `0 allocs/op` — any
   change that introduces allocations in `Add`/`Get`/`Del` on the hot path will be caught
   by `-benchmem`; that's the acceptance bar for this code.
+
+## Provided buffer rings (`internal/iouring/pbuf.go`)
+
+- `IOUring.RegisterBufferRing(bgid, capacity, bufSize)` — kernel provided buffer rings
+  (`IORING_REGISTER_PBUF_RING`): capacity must be a power of 2 and <= 32768, bufSize a
+  multiple of 64 (cache-line aligned buffer starts). Data block and descriptor ring are
+  page-aligned mmaps; blocks >= 2 MiB get `MADV_HUGEPAGE` before first fault (THP; explicit
+  `MAP_HUGETLB` needs pre-reserved nr_hugepages and hard-fails otherwise).
+- The 16-bit ring tail is overlaid with `bufs[0].resv` (offset 14 in the page): Go has no
+  16-bit atomics, so tail updates go through a CAS on the enclosing aligned 32-bit word
+  (`storeTailRelease`), which also provides the release ordering against the kernel's
+  acquire tail load.
+- Kernel-side head is invisible in shared memory; `Available()` queries it via
+  `IORING_REGISTER_PBUF_STATUS` (a syscall, diagnostics only).
+- RECV with `IOSQE_BUFFER_SELECT` picks a buffer at completion time; the selected bid comes
+  back in `CQE.Flags >> 16` with `IORING_CQE_F_BUFFER` (bit 0) set. `ReleaseBuffer(bid)` puts
+  it back. Tests in `pbuf_test.go` drive real socketpair traffic through this path; they
+  skip (not fail) on kernels/rings without pbuf support.
+- `IORING_OP_RECV` is opcode 27 (the `ioUringOPRead = 22` const is READ, despite what
+  task docs say); the real `ExpectRecv` lands with task 020.

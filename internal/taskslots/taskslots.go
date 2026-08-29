@@ -61,7 +61,7 @@ func New[T any](capacity int) (*Slots[T], error) {
 		}
 	}
 
-	return &Slots[T]{
+	res := &Slots[T]{
 		cap:           uint64(capacity),
 		bitmap:        bm,
 		pollerBitmap:  make([]uint64, wordsCount), // Allocated aligned internally if needed, or plain slice
@@ -70,7 +70,9 @@ func New[T any](capacity int) (*Slots[T], error) {
 		tasks:         make([]T, capacity),
 		fallbackMask:  (1 << fallbackMask) - 1,
 		fallback:      make(map[uint64]T),
-	}, nil
+	}
+
+	return res, nil
 }
 
 // Add is executed strictly inside the Single-Threaded Translator Loop.

@@ -6,15 +6,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const OpAccept = 13 // Linux kernel constant for the Accept operation
-
 // Set up persistent structures somewhere so they aren't allocated on the heap each time
 var (
 	dummyAddr unix.RawSockaddrAny
 	dummyLen  uint32 = uint32(unix.SizeofSockaddrAny)
 )
 
-func (r *IOUring) ExpectAccept(listenFD int32, userData uint64) error {
+// ExpectAccept submits an ACCEPT for listenFD. The completing CQE carries the accepted fd
+// in Res (or a negative -errno on failure), addressed by the submitted slotIdx.
+func (r *IOUring) ExpectAccept(listenFD int32, slotIdx uint64) error {
 	var sqe SQEntry
 	sqe.Opcode = OpAccept
 	sqe.FD = listenFD
@@ -28,7 +28,7 @@ func (r *IOUring) ExpectAccept(listenFD int32, userData uint64) error {
 
 	sqe.Len = 0 // The Len field for accept is not used on modern kernels
 	sqe.OpFlags = unix.SOCK_CLOEXEC
-	sqe.UserData = userData
+	sqe.UserData = slotIdx
 
 	return r.Push(sqe)
 }

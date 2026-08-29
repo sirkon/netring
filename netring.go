@@ -1,9 +1,11 @@
 package netring
 
 import (
-	"sync/atomic"
+	"fmt"
+	"sync"
 
 	"github.com/sirkon/blog"
+	"github.com/sirkon/blog/beer"
 
 	"github.com/sirkon/netring/internal/iouring"
 	"github.com/sirkon/netring/internal/taskslots"
@@ -13,62 +15,121 @@ type NetRing struct {
 	r      *iouring.IOUring
 	logger *blog.Logger
 
-	slots *taskslots.Slots[taskContext]
+	slots *taskslots.Slots[*taskCell] // arena stores cell pointers, see 030 section 9
 	chans []chan ringTask
 
+	pbrs []*iouring.ProvidedBufferRing // indexed by SizeClass value (== bgid)
+	pool sync.Pool                     // *taskCell recycling
+
 	timerTask chan struct{}
+	stop      chan struct{}
 }
 
-// taskContext resides strictly within the pre-allocated taskslots arena.
-// It uses atomic primitives safely since methods like Recv/Send access it
-// via direct pointers, completely avoiding value copying across threads.
-type taskContext struct {
-	taskState atomic.Uint32
-	g         uintptr
+// New creates io_uring and envelope over it.
+func New(entries uint32, logger *blog.Logger, options ...OptionSetter) (*NetRing, error) {
+	if logger == nil {
+		return nil, beer.New("logger must be provided")
+	}
 
-	// buf stores the active network data chunk slice.
-	// For reads, the CQ Poller constructs it dynamically from kernel-provided buffers.
-	buf []byte
+	opts := netringOptions{
+		tasksChanBuffer: defaultShardBuffering,
+		tasksChanShards: defaultShardsCount,
+	}
+	var hadSlots bool
+	for _, option := range options {
+		_, ok := option.(*netringOptionsSlotsSetter)
+		if ok {
+			hadSlots = true
+		}
+		if err := option.apply(&opts); err != nil {
+			return nil, beer.Wrap(err, option.String())
+		}
+	}
+	if !hadSlots {
+		opt := &netringOptionsSlotsSetter{
+			noOfSlots: defaultSlotsCapacity,
+		}
+
+		if err := opt.apply(&opts); err != nil {
+			return nil, beer.Wrap(err, opt.String())
+		}
+	}
+
+	ring, err := iouring.New(entries, logger)
+	if err != nil {
+		return nil, beer.Wrap(err, "create io_uring instance")
+	}
+
+	nr := &NetRing{
+		r:      ring,
+		logger: logger,
+
+		slots: opts.slots,
+		chans: make([]chan ringTask, opts.tasksChanShards),
+		pbrs:  make([]*iouring.ProvidedBufferRing, 5),
+		pool: sync.Pool{
+			New: func() any { return new(taskCell) },
+		},
+
+		timerTask: make(chan struct{}, 1),
+		stop:      make(chan struct{}),
+	}
+	for i := range nr.chans {
+		nr.chans[i] = make(chan ringTask, opts.tasksChanBuffer)
+	}
+
+	go nr.translate()
+
+	return nr, nil
 }
 
-// ringTask is a lightweight Plain Old Data (POD) structure.
-// It contains no atomic or runtime tracking objects, allowing the Go compiler
-// to pass it through channels via hardware CPU registers with zero heap overhead.
-type ringTask struct {
-	// --- Data for io_uring.SQEntry ---
-	Opcode opcodeType
-	FD     int32
-	Addr   uint64 // Used as time.Duration value for Timer op.
-	Len    uint32
-	Offset uint64
+// SizeClass is a provided-buffer size class. The numeric value IS the buffer
+// group id (bgid) AND the index into NetRing.pbrs.
+type SizeClass uint64
 
-	// --- Data for Go runtime synchronization ---
-	G       uintptr // Address of the sending goroutine (runtime.getg())
-	SlotIdx uint64  // Preserved slot identifier assigned during allocation phase
-}
-
-// Finite State Machine (FSM) constants synchronized with taskContext.taskState layout.
 const (
-	taskStateInCore uint32 = iota // 0: ringTask went into io_uring / the translator
-	taskStateDone                 // 1: The poller already processed the CQE and wrote the result
-	taskStateParked               // 2: The worker successfully entered gopark and went to sleep
+	// SizeClassTiny for 128 bytes buffer.
+	SizeClassTiny SizeClass = iota + 1
+	// SizeClassSmall for 512 bytes buffer.
+	SizeClassSmall
+	// SizeClassMedium for 1024 bytes buffer.
+	SizeClassMedium
+	// SizeClassBig for 4096 bytes buffer.
+	SizeClassBig
+	// SizeClassHuge for 16384 bytes buffer.
+	SizeClassHuge
 )
 
-type opcodeType uint32
+func (s SizeClass) Size() int {
+	switch s {
+	case SizeClassTiny:
+		return 128
+	case SizeClassSmall:
+		return 512
+	case SizeClassMedium:
+		return 1024
+	case SizeClassBig:
+		return 4096
+	case SizeClassHuge:
+		return 16384
+	default:
+		return 0
+	}
+}
 
-const (
-	opcodeTypeInvalid opcodeType = iota
-
-	// System opcodes.
-	opcodeTypeReleaseBuffer
-	opcodeTypeTimer
-
-	// Network meta opcodes.
-	opcodeTypeAccept
-	opcodeTypeClose
-
-	// Network IO opcodes.
-	opcodeTypeRecv
-	opcodeTypeSend
-	// And further...
-)
+func (s SizeClass) String() string {
+	switch s {
+	case SizeClassTiny:
+		return "tiny"
+	case SizeClassSmall:
+		return "small"
+	case SizeClassMedium:
+		return "medium"
+	case SizeClassBig:
+		return "big"
+	case SizeClassHuge:
+		return "huge"
+	default:
+		return fmt.Sprintf("invalid-size-class(%d)", s)
+	}
+}
