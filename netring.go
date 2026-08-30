@@ -23,6 +23,9 @@ type NetRing struct {
 
 	timerTask chan struct{}
 	stop      chan struct{}
+	// translateDone is closed by the translator on return, so Stop can prove
+	// the translator is gone before its shared memory is torn down.
+	translateDone chan struct{}
 }
 
 // New creates io_uring and envelope over it.
@@ -71,8 +74,9 @@ func New(entries uint32, logger *blog.Logger, options ...OptionSetter) (*NetRing
 			New: func() any { return new(taskCell) },
 		},
 
-		timerTask: make(chan struct{}, 1),
-		stop:      make(chan struct{}),
+		timerTask:     make(chan struct{}, 1),
+		stop:          make(chan struct{}),
+		translateDone: make(chan struct{}),
 	}
 	for i := range nr.chans {
 		nr.chans[i] = make(chan ringTask, opts.tasksChanBuffer)

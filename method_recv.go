@@ -23,6 +23,9 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 	if capacity == 0 {
 		return nil, beer.Newf("recv: %s", sizeClass)
 	}
+	if nr.pbrs[sizeClass] == nil {
+		return nil, beer.Newf("recv: size class %d is not provisioned", uint16(sizeClass))
+	}
 
 	// 3. Arm the cell: the arm protocol must precede the
 	// channel send with no exceptions, otherwise the poller could race a
@@ -37,7 +40,7 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 		FD:      int32(fd),
 		Addr:    0,
 		Len:     capacity,
-		BGID:    uint16(sizeClass - 1),
+		BGID:    uint16(sizeClass),
 		Offset:  0,
 		Ctx:     cell,
 		Payload: nil,

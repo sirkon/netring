@@ -12,6 +12,7 @@ import (
 // goroutine allowed to call ProvidedBufferRing release routines (the shared ring
 // tail is not thread-safe).
 func (nr *NetRing) translate() {
+	defer close(nr.translateDone)
 	chansLen := len(nr.chans)
 	for {
 		select {

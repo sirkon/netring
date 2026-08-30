@@ -49,3 +49,6 @@ func netringParkUnlock(gp *g, lock unsafe.Pointer) bool {
 // handed back to goready through a (*g)(unsafe.Pointer(...)) conversion
 // done in one expression, never kept around.
 func getg() uintptr
+
+//go:linkname procyield runtime.procyield
+func procyield(uint32)

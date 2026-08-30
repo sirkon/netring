@@ -5,8 +5,9 @@ go 1.27
 require (
 	github.com/alecthomas/assert/v2 v2.11.0
 	github.com/kelindar/bitmap v1.5.5
-	github.com/sirkon/blog v0.0.0-20260429185125-7d7d48c55308
+	github.com/sirkon/blog v0.0.1
 	github.com/sirkon/deepequal v0.5.12
+	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 )
 
