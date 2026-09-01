@@ -17,13 +17,12 @@ func (nr *NetRing) Close(fd int) error {
 
 	// Arm the cell: the arm protocol must precede the channel
 	// send with no exceptions, otherwise the poller could race a half-armed cell.
-	cell := nr.taskCell()
+	cell := nr.taskCell(opcodeTypeClose, fd)
 
 	// Build the POD. io_close_prep rejects SQEs with off/addr/
 	// len/buf_index set, so the reserves stay zero (ExpectClose contract).
 	task := ringTask{
 		Opcode:  opcodeTypeClose,
-		FD:      int32(fd),
 		Addr:    0,
 		Len:     0,
 		BGID:    0,

@@ -80,13 +80,13 @@ func (nr *NetRing) Poll(
 			continue
 
 		case resp.UserData == noWaiterTaskID:
-			// Nobody waits, nothing to dispatch (fire-and-forget opcodes).
-			// The close result itself is meaningless at this point: nobody
-			// is listening, and reporting an error for an fd that no longer
-			// exists would be noise; a failure is still logged, at warning
-			// level, for diagnostics.
+			// Handle raw fire-and-forget submission completion entries
+			// natively: no tracking slot was consumed (TASK.md section 4) and
+			// nobody waits, so nothing is dispatched and there is no goready.
+			// A failure is still recorded, at warning level, via diagnostics
+			// logging fields.
 			if resp.Res < 0 {
-				nr.logger.Warn(nil, "netring: fire-and-forget operation completed with an error",
+				nr.logger.Warn(nil, "netring: asynchronous send operation completed with error",
 					blog.Int("result", int(resp.Res)))
 			}
 			continue
@@ -99,30 +99,25 @@ func (nr *NetRing) Poll(
 				blog.Uint64("slot", resp.UserData))
 			continue
 		}
-		nr.slots.Del(resp.UserData)
 
 		// Results are written BEFORE the CAS: the
 		// seq-cst Swap/CAS pair on taskState is the release/acquire edge.
 		cell.res = resp.Res
 		cell.flags = resp.Flags
 
-		if cell.isAsync {
-			// We didn't put cell back on async request, need to do this now.
-			nr.pool.Put(cell)
-			if resp.Res < 21 && resp.Res != 1 {
-				if resp.Res < 0 {
-					nr.logger.Error(
-						nil, "netring: fire and forget operation completed with an error",
-						blog.Err(unix.Errno(resp.Res)),
-					)
-				} else {
-					nr.logger.Warn(
-						nil, "send operation only did partial send",
-						blog.Int32("bytes-sent", resp.Res),
-					)
-				}
+		switch cell.opCode {
+		case opcodeTypeSend:
+			sCell := &nr.sendCells[cell.fd]
+			if resp.Res < 0 {
+				sCell.err = unix.Errno(-resp.Res)
+			} else {
+				sCell.sent += uint64(resp.Res)
 			}
+			nr.pool.Put(cell)
+			nr.slots.Del(resp.UserData)
+			sCell.finished.Add(1)
 			continue
+		default:
 		}
 
 		if !cell.taskState.CompareAndSwap(taskStateInCore, taskStateDone) {

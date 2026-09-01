@@ -62,6 +62,10 @@ func netringClient(ctx context.Context, logger *blog.Logger, barrier chan struct
 		return beer.Wrap(err, "provision tiny buffer ring")
 	}
 
+	if err := nr.RegisterBufferRing(netring.SizeClassHuge, 1024); err != nil {
+		return beer.Wrap(err, "provision huge buffer ring")
+	}
+
 	// The fd stays blocking: io_uring punts blocking sockets to io-wq, which
 	// is what we want for the timeout behavior below.
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
@@ -154,13 +158,17 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 			sequenceID, clientTime, payload := requester.Request()
 			sequences.Store(sequenceID, clientTime)
 
-			if _, err := nr.Send(fd, payload); err != nil {
+			if err := nr.Send(fd, payload); err != nil {
 				return beer.Wrap(err, "send request").Uint64("sequence-id", sequenceID)
 			}
 		}
 
-		if _, err := nr.Send(fd, requester.RequestStop()); err != nil {
+		if err := nr.Send(fd, requester.RequestStop()); err != nil {
 			return beer.Wrap(err, "send stop request").Uint64("sequence-id", 0)
+		}
+
+		if err := nr.FlushFDSends(fd); err != nil {
+			return beer.Wrap(err, "flush outgoing requests")
 		}
 
 		logger.Info(nil, "sent all requests")
@@ -185,7 +193,7 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 			default:
 			}
 
-			view, err := nr.Recv(fd, netring.SizeClassTiny)
+			view, err := nr.Read(fd, netring.SizeClassHuge)
 			if errors.Is(err, syscall.ENOBUFS) {
 				continue // ring was empty; data stays queued
 			}

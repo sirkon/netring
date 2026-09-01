@@ -24,8 +24,10 @@ type Slots[T any] struct {
 	bitmapLenMask uint64        // Ring mask for uint64 words array boundaries
 	wave          uint64        // Current tracking word index pointer
 	free          uint64        // Remaining slots on the hot path
-	delCount      uint64        // Counts deletions by the poller.
-	lastDelCount  uint64        // Counts how many deletions were caught by the translator.
+
+	delCount     uint64 // Counts deletions by the poller.
+	lastDelCount uint64 // Counts how many deletions were caught by the translator.
+
 	// fallback indices are within [2^k, 2^63-1] values, where k is the power of two of slot slots capacity.
 	// So, the length of fallback indices in bits is 63 - k, and we use 2^{63 - k} - 1 to get their values.
 	fallbackMask uint64

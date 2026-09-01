@@ -20,6 +20,7 @@ func (nr *NetRing) Stop() error {
 	// tasks are dropped, which is safe because the rings are munmap'ed right
 	// after and no one else writes them.
 	close(nr.stop)
+	return nil
 
 	// 2. The fallback is provably gone before its shared memory (pbuf ring
 	// tails) is touched.

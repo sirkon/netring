@@ -9,7 +9,7 @@ const (
 
 	// defaultSlotsCapacity is the hot-path size of the in-flight task slot
 	// table (taskslots requires a power of 2 strictly greater than 4096).
-	defaultSlotsCapacity = 8192
+	defaultSlotsCapacity = 1 << 20
 
 	// defaultShardsCount is the number of worker -> translator shard channels.
 	// Per-fd ordering is preserved by routing fd % shardCount; the count is a

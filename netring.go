@@ -26,7 +26,7 @@ type NetRing struct {
 	finishedPushes atomic.Uint64
 	ticketTail     atomic.Uint32 // see §3.2: 32-bit domain
 
-	failedSockets [8192]uint64
+	sendCells []sendCell
 
 	timerTask chan struct{}
 	stop      chan struct{}
@@ -85,6 +85,8 @@ func New(entries uint32, logger *blog.Logger, options ...OptionSetter) (*NetRing
 		pool: sync.Pool{
 			New: func() any { return new(taskCell) },
 		},
+
+		sendCells: make([]sendCell, 65536),
 
 		timerTask:           make(chan struct{}, 1),
 		stop:                make(chan struct{}),

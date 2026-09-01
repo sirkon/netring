@@ -8,35 +8,38 @@ import (
 	"github.com/sirkon/netring/internal/iouring"
 )
 
-// Recv acquires an incoming payload directly into a kernel-provided buffer of
+// Read acquires an incoming payload directly into a kernel-provided buffer of
 // the requested size class and returns a zero-copy view into it. The view is
-// valid until ReleaseBuffer(sizeClass, view) hands it back to the kernel
-// .
-func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
+// valid until ReleaseBuffer(sizeClass, view) hands it back to the kernel.
+//
+// Read is the described-read analogue of Recv: it is byte-oriented like
+// read(2) and never consumes a message boundary when fd is a datagram socket
+// (recvmsg(2) semantics choose the next message; if you need those, use Recv).
+func (nr *NetRing) Read(fd int, sizeClass SizeClass) ([]byte, error) {
 	// 1. Validate fd and sizeClass. Unknown classes must fail before anything
 	// is touched; the class must also be provisioned, else the translator
 	// would dereference a nil ring.
 	if fd < 0 {
-		return nil, beer.Newf("recv: invalid descriptor %d, expected a non-negative one", fd)
+		return nil, beer.Newf("read: invalid descriptor %d, expected a non-negative one", fd)
 	}
 	capacity := sizeClass.Size()
 	if capacity == 0 {
-		return nil, beer.Newf("recv: %s", sizeClass)
+		return nil, beer.Newf("read: %s", sizeClass)
 	}
 	if nr.pbrs[sizeClass] == nil {
-		return nil, beer.Newf("recv: size class %d is not provisioned", uint16(sizeClass))
+		return nil, beer.Newf("read: size class %d is not provisioned", uint16(sizeClass))
 	}
 
 	// 3. Arm the cell: the arm protocol must precede the
 	// channel send with no exceptions, otherwise the poller could race a
 	// half-armed cell.
-	cell := nr.taskCell(opcodeTypeRecv, fd)
+	cell := nr.taskCell(opcodeTypeRead, fd)
 
-	// 4. Build the POD. Recv is address-less: Addr and Offset
+	// 4. Build the POD. Read is address-less: Addr and Offset
 	// stay zero, the kernel picks the buffer at completion time. BGID IS the
 	// SizeClass value.
 	task := ringTask{
-		Opcode:  opcodeTypeRecv,
+		Opcode:  opcodeTypeRead,
 		Addr:    0,
 		Len:     capacity,
 		BGID:    uint16(sizeClass),
@@ -90,11 +93,11 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 	// 10. res > 0: res is the byte count in the kernel-picked buffer.
 
 	// 11. Defensive branch (must not fire): every
-	// successful BUFFER_SELECT RECV CQE carries ioUringCQEFBuffer via
+	// successful BUFFER_SELECT READ CQE carries ioUringCQEFBuffer via
 	// io_put_kbuf; its absence with res > 0 would be a malformed completion.
 	if flags&iouring.CQEFBuffer == 0 {
 		nr.pool.Put(cell)
-		return nil, beer.New("recv: successful completion carried no buffer-select flag")
+		return nil, beer.New("read: successful completion carried no buffer-select flag")
 	}
 
 	// 12. Extract the bid: CQE flags >> ioUringCQEBufferShift (16).
@@ -111,21 +114,4 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 	// to the caller, who owns the ReleaseBuffer obligation.
 	nr.pool.Put(cell)
 	return view, nil
-}
-
-// ReleaseBuffer hands a consumed buffer view (a loan from Recv) back to the
-// kernel-managed ring of the given size class. It never parks: it routes the
-// release through the translator and returns immediately.
-func (nr *NetRing) ReleaseBuffer(sizeClass SizeClass, view []byte) {
-	if len(view) == 0 {
-		return
-	}
-
-	task := ringTask{
-		Opcode:  opcodeTypeReleaseBuffer,
-		BGID:    uint16(sizeClass),
-		Payload: unsafe.Pointer(unsafe.SliceData(view)),
-	}
-
-	nr.submit(task)
 }

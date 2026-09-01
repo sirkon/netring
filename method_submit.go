@@ -8,12 +8,14 @@ import (
 	"github.com/sirkon/blog"
 )
 
+var everActive bool
+
+const statusCheckCountSubmit = 128
+
 // submit submits a task either directly to the SQ, or tries to a fallback way
 // with a channel. Returns true, if the task was submitted.
 // IMPORTANT: Goroutines who tried to submit and got false MUST NOT PARK.
 func (nr *NetRing) submit(task ringTask) bool {
-	runtime.LockOSThread()
-
 	if task.Opcode == opcodeTypeReleaseBuffer {
 		// No slot, no SQE: user-space only.
 		view := unsafe.Slice((*byte)(task.Payload), 1)
@@ -24,6 +26,8 @@ func (nr *NetRing) submit(task ringTask) bool {
 	}
 
 	status := nr.submitIntention()
+
+	var statusCheckCount int
 
 statusCheck:
 	if status == statusFallbackActive {
@@ -40,12 +44,26 @@ statusCheck:
 	if ticketTail != tail {
 		procyield(30)
 		status = nr.barrier.Load() & statusFallbackActive
+
+		statusCheckCount++
+		if statusCheckCount == statusCheckCountSubmit {
+			statusCheckCount = 0
+			runtime.Gosched()
+		}
+
 		goto statusCheck
 	}
 
 	if !nr.ticketTail.CompareAndSwap(tail, tail+1) {
 		procyield(30)
 		status = nr.barrier.Load() & statusFallbackActive
+
+		statusCheckCount++
+		if statusCheckCount == statusCheckCountSubmit {
+			statusCheckCount = 0
+			runtime.Gosched()
+		}
+
 		goto statusCheck
 	}
 
@@ -61,6 +79,7 @@ statusCheck:
 
 	nr.dispatch(task)
 	nr.finishedPushes.Add(1)
+
 	return true
 }
 
@@ -98,25 +117,31 @@ func (nr *NetRing) dispatch(task ringTask) {
 	switch task.Opcode {
 	case opcodeTypeAccept:
 		slotIdx := nr.slots.Add(task.Ctx)
-		if err := nr.r.ExpectAccept(task.FD, slotIdx); err != nil {
+		if err := nr.r.ExpectAccept(int32(task.Ctx.fd), slotIdx); err != nil {
 			nr.abortIssuer(slotIdx, true, err)
 		}
 
 	case opcodeTypeConnect:
 		slotIdx := nr.slots.Add(task.Ctx)
-		if err := nr.r.ExpectConnect(int(task.FD), task.Payload, uint32(task.Addr), slotIdx); err != nil {
+		if err := nr.r.ExpectConnect(int(task.Ctx.fd), task.Payload, uint32(task.Addr), slotIdx); err != nil {
 			nr.abortIssuer(slotIdx, true, err)
 		}
 
 	case opcodeTypeRecv:
 		slotIdx := nr.slots.Add(task.Ctx)
-		if err := nr.r.ExpectRecv(task.FD, task.BGID, task.Len, slotIdx); err != nil {
+		if err := nr.r.ExpectRecv(int32(task.Ctx.fd), task.BGID, task.Len, slotIdx); err != nil {
+			nr.abortIssuer(slotIdx, true, err)
+		}
+
+	case opcodeTypeRead:
+		slotIdx := nr.slots.Add(task.Ctx)
+		if err := nr.r.ExpectRead(int32(task.Ctx.fd), task.BGID, task.Len, slotIdx); err != nil {
 			nr.abortIssuer(slotIdx, true, err)
 		}
 
 	case opcodeTypeSend:
 		slotIdx := nr.slots.Add(task.Ctx)
-		if err := nr.r.ExpectSend(task.FD, task.Payload, task.Len, slotIdx); err != nil {
+		if err := nr.r.ExpectSend(int32(task.Ctx.fd), task.Payload, task.Len, slotIdx); err != nil {
 			nr.abortIssuer(slotIdx, false, err)
 		}
 
@@ -124,21 +149,27 @@ func (nr *NetRing) dispatch(task ringTask) {
 		// Close parks its caller like any other opcode, so a
 		// slot is allocated and the CQE dispatches through the standard path.
 		slotIdx := nr.slots.Add(task.Ctx)
-		if err := nr.r.ExpectClose(task.FD, slotIdx); err != nil {
+		if err := nr.r.ExpectClose(int32(task.Ctx.fd), slotIdx); err != nil {
 			nr.abortIssuer(slotIdx, true, err)
 		}
 
 	case opcodeTypeReleaseBuffer:
-		// Processed long before.
+		// Processed before.
+		panicMustNotBeHere()
 
 	case opcodeTypeTimer:
-		// Reserved for the poller re-arm subsystem; log-and-skip for now
-		//.
-		nr.logger.Error(nil, "netring: opcodeTypeTimer is not implemented yet")
+		nr.ticketTail.Store(atomic.LoadUint32(nr.r.SQTail))
+		// Reserved for the poller re-arm subsystem; log-and-skip for now.
+		nr.logger.Error(nil, task.Opcode.String()+" is not implemented yet")
 
 	default:
-		nr.logger.Error(nil, "netring: unknown opcode submitted into the translator",
-			blog.Uint32("opcode", uint32(task.Opcode)))
+		nr.ticketTail.Store(atomic.LoadUint32(nr.r.SQTail))
+		nr.logger.Error(
+			nil, "unsupported opcode type submitted",
+			blog.Group("opcode",
+				blog.Uint64("code", uint64(task.Opcode)), blog.Stg("name", task.Opcode),
+			),
+		)
 	}
 }
 
@@ -158,4 +189,8 @@ func (nr *NetRing) abortIssuer(slotIdx uint64, needWake bool, err error) {
 		//. Convert and call in one expression.
 		goready((*g)(unsafe.Pointer(cell.g)), parkTraceSkip)
 	}
+}
+
+func panicMustNotBeHere() {
+	panic("must not be here")
 }

@@ -17,14 +17,13 @@ func (nr *NetRing) Accept(listenFD int) (int32, error) {
 
 	// Arm the cell: the arm protocol must precede the channel
 	// send with no exceptions, otherwise the poller could race a half-armed cell.
-	cell := nr.taskCell()
+	cell := nr.taskCell(opcodeTypeAccept, listenFD)
 
 	// Build the POD. The accepted peer address is discarded: the
 	// iouring layer parks it in package dummies, no sockaddr returns through this
 	// API. Length/offset/bgid are unused by ACCEPT.
 	task := ringTask{
 		Opcode:  opcodeTypeAccept,
-		FD:      int32(listenFD),
 		Addr:    0,
 		Len:     0,
 		BGID:    0,

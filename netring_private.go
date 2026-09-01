@@ -8,10 +8,12 @@ import (
 	"unsafe"
 )
 
-func (nr *NetRing) taskCell() *taskCell {
+func (nr *NetRing) taskCell(opCode opcodeType, fd int) *taskCell {
 	ctx := nr.pool.Get().(*taskCell)
 	*ctx = taskCell{
-		g: getg(),
+		g:      getg(),
+		opCode: opCode,
+		fd:     uint64(fd),
 	}
 
 	return ctx
@@ -25,11 +27,11 @@ type taskCell struct {
 	taskState atomic.Uint32
 	g         uintptr // written by the translator from the POD G field at submit time
 
-	res     int32
-	flags   uint32
-	err     error
-	opCode  opcodeType
-	isAsync bool
+	res    int32
+	flags  uint32
+	err    error
+	opCode opcodeType
+	fd     uint64
 }
 
 // ringTask is a lightweight Plain Old Data (POD) structure: no atomics, no
@@ -37,14 +39,14 @@ type taskCell struct {
 // preallocated channel buffer: zero heap allocations per submit, the compiler
 // passes it through hardware CPU registers where it fits.
 type ringTask struct {
-	// --- Data for io_uring.SQEntry ---
 	Opcode opcodeType
-	FD     int32
-	Addr   uint64 // reserved for the Timer subsystem (duration value); zero for 031-034
-	Len    uint32 // Recv: size-class capacity in bytes; Send: payload length
-	BGID   uint16 // Recv: buffer group id == uint16(SizeClass); zero otherwise
-	Offset uint64 // reserved; zero for 031-034
 
+	// --- Data for io_uring.SQEntry ---
+	Addr uint64 // reserved for the Timer subsystem (duration value); zero for 031-034
+	Len  uint32 // Recv: size-class capacity in bytes; Send: payload length
+	BGID uint16 // Recv: buffer group id == uint16(SizeClass); zero otherwise
+
+	Offset uint64 // reserved; zero for 031-034
 	// --- Data for Go runtime synchronization ---
 	Ctx     *taskCell      // park cell; nil for fire-and-forget opcodes
 	Payload unsafe.Pointer // Send: data pointer; ReleaseBuffer: view pointer; nil otherwise
@@ -74,10 +76,11 @@ const (
 	// Network IO opcodes.
 	opcodeTypeRecv
 	opcodeTypeSend
+	opcodeTypeRead
 	// And further...
 )
 
-var isAsyncOp = [8]bool{opcodeTypeSend: true}
+var isAsyncOp = [9]bool{opcodeTypeSend: true}
 
 // String implements fmt.Stringer.
 func (t opcodeType) String() string {
@@ -98,6 +101,8 @@ func (t opcodeType) String() string {
 		return "Recv"
 	case opcodeTypeSend:
 		return "Send"
+	case opcodeTypeRead:
+		return "Read"
 	default:
 		return fmt.Sprintf("opcodeType(%d)", t)
 	}

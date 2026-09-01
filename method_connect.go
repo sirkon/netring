@@ -43,7 +43,7 @@ func (nr *NetRing) Connect(fd int, sa unix.Sockaddr) error {
 	// 3. Arm the cell: the arm protocol must precede the channel send with no
 	// exceptions, otherwise the poller could race a half-armed cell. taskCell
 	// zeroes res/flags and records g = getg().
-	cell := nr.taskCell()
+	cell := nr.taskCell(opcodeTypeConnect, fd)
 
 	// 4. Build the POD. The raw sockaddr travels as a GC-rooted typed
 	// unsafe.Pointer (Payload), never as uint64/uintptr, so the GC keeps
@@ -51,7 +51,6 @@ func (nr *NetRing) Connect(fd int, sa unix.Sockaddr) error {
 	// it from there) and Later SQE.Off is filled by the translator.
 	task := ringTask{
 		Opcode:  opcodeTypeConnect,
-		FD:      int32(fd),
 		Addr:    uint64(sockLen),
 		Len:     0,
 		BGID:    0,

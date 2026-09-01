@@ -12,13 +12,15 @@ import (
 // goroutine allowed to call ProvidedBufferRing release routines (the shared ring
 // tail is not thread-safe).
 func (nr *NetRing) fallbackLoop() {
+	runtime.LockOSThread()
 	defer close(nr.fallbackLoopStopped)
-	
+
 	for {
 		var task ringTask
 
 		select {
 		case task = <-nr.fallbackChan:
+			everActive = true
 
 		loop:
 			// Снимаем слепок эпохи
