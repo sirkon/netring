@@ -3,6 +3,7 @@ package netring
 import (
 	"unsafe"
 
+	"github.com/sirkon/blog"
 	"github.com/sirkon/blog/beer"
 
 	"github.com/sirkon/netring/internal/iouring"
@@ -41,7 +42,7 @@ func (nr *NetRing) Read(fd int, sizeClass SizeClass) ([]byte, error) {
 	task := ringTask{
 		Opcode:  opcodeTypeRead,
 		Addr:    0,
-		Len:     capacity,
+		Len:     0,
 		BGID:    uint16(sizeClass),
 		Offset:  0,
 		Ctx:     cell,
@@ -82,10 +83,16 @@ func (nr *NetRing) Read(fd int, sizeClass SizeClass) ([]byte, error) {
 		return nil, cell.err
 	}
 
-	// 9. res == 0: the peer performed an orderly shutdown (EOF). The buffer
-	// was recycled in-kernel, nothing is consumed; return the empty view, not
-	// an error. No ReleaseBuffer call here.
+	// 9. res == 0: the peer performed an orderly shutdown (EOF). Unlike RECV,
+	// the kernel does not recycle the picked provided buffer in place (no
+	// IORING_CQE_F_BUFFER, no bid to release), it just advances the ring head
+	// and the buffer would be lost forever. Replenish it explicitly so the
+	// ring does not shrink with every EOF. Return the empty view, not an
+	// error; no caller-side ReleaseBuffer here.
 	if res == 0 {
+		if err := nr.pbrs[sizeClass].ReplenishOne(); err != nil {
+			nr.logger.Error(nil, "failed to replenish consumed read buffer", blog.Err(err))
+		}
 		nr.pool.Put(cell)
 		return nil, nil
 	}

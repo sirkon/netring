@@ -22,6 +22,8 @@ const (
 	ioUringSQEBufferSelect = 1 << 5 // IOSQE_BUFFER_SELECT: the kernel picks a buffer from buf_group
 	ioUringSQEAsync        = 1 << 4
 
+	ioUringRecvSendBundle = 1 << 3
+
 	// CQEFBuffer and CQEBufferShift are exported: the high-level Recv method
 	// (netring package) must interpret CQE flags to recover the selected
 	// buffer id.

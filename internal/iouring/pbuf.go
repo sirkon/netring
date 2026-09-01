@@ -341,6 +341,48 @@ func (pbr *ProvidedBufferRing) Available() (uint32, error) {
 	return uint32(uint16(uint32(*pbr.ringTail) - status.Head)), nil
 }
 
+// ReplenishOne returns one buffer to the kernel ring after a completion that
+// consumed a provided buffer without handing its bid back: a READ issued with
+// IOSQE_BUFFER_SELECT that completed with res == 0 (EOF). The kernel advances
+// the ring head over the picked buffer but the CQE carries no
+// IORING_CQE_F_BUFFER, so the buffer is unrecoverable from the completion
+// itself. RECV recycles the selected buffer in place and never needs this.
+//
+// It is a no-op when the ring is still full (the kernel recycled the buffer,
+// as RECV does, or nothing was consumed), and otherwise re-publishes the
+// descriptor the kernel consumed (its bid is still readable from the ring)
+// and bumps the tail, restoring the ring count.
+func (pbr *ProvidedBufferRing) ReplenishOne() error {
+	status := bufStatus{
+		BufGroup: uint32(pbr.bgid),
+	}
+	_, _, errno := syscall.Syscall6(
+		unix.SYS_IO_URING_REGISTER,
+		uintptr(pbr.fd),
+		uintptr(ioUringRegisterPbufStatus),
+		uintptr(unsafe.Pointer(&status)),
+		1,
+		0,
+		0,
+	)
+	if errno != 0 {
+		return beer.Wrap(errno, "get pbuf ring head")
+	}
+
+	tail := uint32(*pbr.ringTail)
+	head := status.Head
+	avail := uint32(uint16(tail - head))
+	if avail == pbr.capacity {
+		return nil // the kernel recycled the buffer; nothing to replenish
+	}
+
+	// The kernel consumed the entry right before its current head; the
+	// descriptor's BID field is still intact, read it and re-publish.
+	consumedIdx := (head - 1) & pbr.mask
+	pbr.ReleaseBuffer(pbr.entry(consumedIdx).BID)
+	return nil
+}
+
 // entry returns the idx-th buffer descriptor, idx must be already masked.
 // Entry 0 is not special-cased: its Addr/Len/BID fields are a normal descriptor, only its
 // Resv field is the ring tail and is written exclusively via ringTail.

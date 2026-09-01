@@ -193,7 +193,7 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 			default:
 			}
 
-			view, err := nr.Read(fd, netring.SizeClassHuge)
+			view, err := nr.Recv(fd, netring.SizeClassHuge)
 			if errors.Is(err, syscall.ENOBUFS) {
 				continue // ring was empty; data stays queued
 			}
@@ -207,7 +207,7 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 			// Copy out before releasing the loan...
 			work := carry
 			work = append(work, view...)
-			nr.ReleaseBuffer(netring.SizeClassTiny, view) // ...then hand the kernel buffer back
+			nr.ReleaseBuffer(netring.SizeClassHuge, view) // ...then hand the kernel buffer back
 
 			for len(work) >= responseFrameSize && processed < requestsNo {
 				frame := work[:responseFrameSize]
