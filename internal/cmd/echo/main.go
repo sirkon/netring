@@ -175,6 +175,8 @@ func handleRequest(conn net.Conn, logger *blog.Logger) (err error) {
 	buf := make([]byte, 21)
 	var responser testprotocol.ResponseBuilder
 
+	sequences := map[uint64]struct{}{}
+
 	for {
 		header, err := reader.ReadByte()
 		if err != nil {
@@ -202,6 +204,10 @@ func handleRequest(conn net.Conn, logger *blog.Logger) (err error) {
 			return beer.Wrap(err, "parse request")
 		}
 		_ = clientTime
+		if _, ok := sequences[sequenceID]; ok {
+			logger.Warn(nil, "got duplicate sequence ID", blog.Uint64("sequenceID", sequenceID))
+		}
+		sequences[sequenceID] = struct{}{}
 
 		//logger.Debug(nil, "request data",
 		//	blog.Uint64("sequence-id", sequenceID),

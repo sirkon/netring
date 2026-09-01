@@ -12,7 +12,7 @@ import (
 // never closed twice.
 func (nr *NetRing) Close(fd int) error {
 	if fd < 0 {
-		return beer.Newf("close: invalid descriptor %d, expected a non-negative one", fd)
+		return beer.Newf("invalid descriptor %d, expected a non-negative one", fd)
 	}
 
 	// Arm the cell: the arm protocol must precede the channel
@@ -35,7 +35,9 @@ func (nr *NetRing) Close(fd int) error {
 	// Submit into the per-descriptor shard: it keeps all operations of one fd
 	// FIFO in the SQ, so a close lands strictly after any in-flight op it must
 	// cancel.
-	nr.chans[fd&(len(nr.chans)-1)] <- task
+	if !nr.submit(task) {
+		return beer.Newf("failed to submit task")
+	}
 
 	// Suspend until the CQ poller delivers the result. Both the slept and the
 	// never-slept paths return here with the results already in the cell.

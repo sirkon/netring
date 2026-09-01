@@ -1,7 +1,6 @@
 package netring
 
 import (
-	"runtime"
 	"unsafe"
 
 	"github.com/sirkon/blog/beer"
@@ -30,6 +29,7 @@ func (nr *NetRing) Send(fd int, data []byte) (int, error) {
 	bufPtr := unsafe.Pointer(unsafe.SliceData(data))
 
 	cell := nr.taskCell()
+	cell.isAsync = true
 
 	// 5. Build the POD. Send carries the payload as a
 	// GC-rooted typed unsafe.Pointer (Payload), never as uint64/uintptr, so
@@ -50,40 +50,9 @@ func (nr *NetRing) Send(fd int, data []byte) (int, error) {
 	// the SQ, so ordering is preserved. The channel send may block on
 	// backpressure; nothing can complete before the task reaches the
 	// translator, so that is fine.
-	nr.chans[fd&(len(nr.chans)-1)] <- task
-
-	// 7. Suspend until the CQ poller delivers the result. Both the slept and
-	// the never-slept paths return here with the results already in the cell.
-	gopark(
-		netringParkUnlock,
-		unsafe.Pointer(cell),
-		waitReasonIOWait,
-		traceBlockGeneric,
-		parkTraceSkip,
-	)
-
-	// 8. Wakeup path (slept or never slept, identical): read the result from
-	// the cell. Send ignores cell.flags entirely.
-	res := cell.res
-
-	// 9. Keep the payload reference alive until after the cell read, so the
-	// GC cannot collect the payload while the kernel may still be reading it
-	//.
-	runtime.KeepAlive(data)
-
-	// Return the cell to the pool. No scrubbing: the next arm protocol
-	// overwrites every field.
-	nr.pool.Put(cell)
-
-	// 10. res < 0: the completion failed, mapped back to a raw errno
-	//.
-	if res < 0 {
-		return 0, kernelResultToError(res)
-	}
-	if cell.err != nil {
-		return 0, cell.err
+	if !nr.submit(task) {
+		return 0, beer.New("failed to submit task")
 	}
 
-	// 11. res >= 0: res is the number of bytes accepted.
-	return int(res), nil
+	return len(data), nil
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/sirkon/blog"
+	"github.com/sirkon/blog/beer"
 )
 
 func NewLogger(w io.Writer) *blog.Logger {
@@ -20,7 +21,8 @@ func NewLogger(w io.Writer) *blog.Logger {
 		return logger
 	}
 
-	logger, err := blog.NewLogger(blog.NewPrettyWriter(w))
+	beer.InsertLocationsOn()
+	logger, err := blog.NewLogger(blog.NewPrettyWriter(w).WithLightTerminal())
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "failed to initialize pretty logger:", err)
 		os.Exit(1)

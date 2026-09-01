@@ -84,25 +84,50 @@ type RequestBuilder struct {
 	buf        []byte
 }
 
+// New allocates the whole request stream (requestsNo 22-byte ping frames plus
+// one 1-byte stop frame) up front, so each Request/RequestStop returns a
+// distinct, immutable slice of that storage. The caller must keep every
+// returned slice alive and unmodified until the kernel has finished with it
+// (Send takes no copies).
+func New(requestsNo int) (*RequestBuilder, error) {
+	if requestsNo < 1 {
+		return nil, beer.Newf("RequestBuilder: requestsNo must be >= 1, got %d", requestsNo)
+	}
+
+	size := requestsNo*requestFrameSize + stopFrameSize + slackSize
+
+	p := new(RequestBuilder)
+	p.buf = make([]byte, size)
+
+	return p, nil
+}
+
 func (p *RequestBuilder) Request() (sequenceID uint64, clientTime uint64, requestPayload []byte) {
-	buf := p.buf[:0]
+	off := len(p.buf)
 	sequenceID = p.sequenceID
 	now := uint64(time.Now().UnixNano())
 
-	buf = append(buf, HeaderCodePing.Code())
-	buf = binary.LittleEndian.AppendUint64(buf, sequenceID)
-	buf = append(buf, "Hello"...)
-	buf = binary.LittleEndian.AppendUint64(buf, now)
+	p.buf = append(p.buf, HeaderCodePing.Code())
+	p.buf = binary.LittleEndian.AppendUint64(p.buf, sequenceID)
+	p.buf = append(p.buf, "Hello"...)
+	p.buf = binary.LittleEndian.AppendUint64(p.buf, now)
 
 	p.sequenceID++
-	p.buf = buf
-	return sequenceID, now, buf
+
+	return sequenceID, now, p.buf[off:]
 }
 
 func (p *RequestBuilder) RequestStop() []byte {
-	buf := p.buf[:0]
-	buf = append(buf, HeaderCodeStop.Code())
-	p.buf = buf
+	off := len(p.buf)
+	p.buf = append(p.buf, HeaderCodeStop.Code())
 
-	return p.buf
+	return p.buf[off:]
 }
+
+const (
+	requestFrameSize = 22
+	stopFrameSize    = 1
+	// slackSize keeps the appends in Request and RequestStop from
+	// reallocating p.buf once it reaches the final stream size (see New).
+	slackSize = 64
+)

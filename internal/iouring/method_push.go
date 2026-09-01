@@ -10,12 +10,7 @@ import (
 // May return ErrSQFull if the task queue is full; it returns exactly the ErrSQFull value itself, without wrapping.
 func (r *IOUring) Push(entry SQEntry) error {
 	tail := *r.SQTail
-	head := atomic.LoadUint32(r.SQHead)
 	mask := *r.SQMask
-
-	if tail-head >= *r.SQEntries {
-		return ErrSQFull
-	}
 
 	index := tail & mask
 

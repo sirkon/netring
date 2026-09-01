@@ -18,6 +18,7 @@ func (r *IOUring) ExpectSend(fd int32, bufPtr unsafe.Pointer, bufLen uint32, slo
 	sqe.Addr = uint64(uintptr(bufPtr))
 	sqe.Len = bufLen
 	sqe.UserData = slotIdx
+	sqe.Flags = ioUringSQEAsync // Require a kernel to finish a task once it adopted it from the SQ.
 
 	return r.Push(sqe)
 }

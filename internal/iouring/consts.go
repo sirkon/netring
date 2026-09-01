@@ -20,6 +20,7 @@ const (
 	ioUringRegisterPbufStatus = 26 // IORING_REGISTER_PBUF_STATUS
 
 	ioUringSQEBufferSelect = 1 << 5 // IOSQE_BUFFER_SELECT: the kernel picks a buffer from buf_group
+	ioUringSQEAsync        = 1 << 4
 
 	// CQEFBuffer and CQEBufferShift are exported: the high-level Recv method
 	// (netring package) must interpret CQE flags to recover the selected

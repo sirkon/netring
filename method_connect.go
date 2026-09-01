@@ -64,7 +64,9 @@ func (nr *NetRing) Connect(fd int, sa unix.Sockaddr) error {
 	// in the SQ, so a connect lands strictly after any in-flight op it must
 	// follow. The channel send may block on backpressure; nothing can complete
 	// before the task reaches the translator, so that is fine.
-	nr.chans[fd&(len(nr.chans)-1)] <- task
+	if !nr.submit(task) {
+		return beer.New("failed to submit task")
+	}
 
 	// 6. Suspend until the CQ poller delivers the result. Both the slept and
 	// the never-slept paths return here with the results already in the cell.

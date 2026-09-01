@@ -106,6 +106,25 @@ func (nr *NetRing) Poll(
 		cell.res = resp.Res
 		cell.flags = resp.Flags
 
+		if cell.isAsync {
+			// We didn't put cell back on async request, need to do this now.
+			nr.pool.Put(cell)
+			if resp.Res < 21 && resp.Res != 1 {
+				if resp.Res < 0 {
+					nr.logger.Error(
+						nil, "netring: fire and forget operation completed with an error",
+						blog.Err(unix.Errno(resp.Res)),
+					)
+				} else {
+					nr.logger.Warn(
+						nil, "send operation only did partial send",
+						blog.Int32("bytes-sent", resp.Res),
+					)
+				}
+			}
+			continue
+		}
+
 		if !cell.taskState.CompareAndSwap(taskStateInCore, taskStateDone) {
 			// The state is Parked, written strictly after the runtime placed
 			// the goroutine into _Gwaiting: goready is always safe, the

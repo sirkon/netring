@@ -1,6 +1,7 @@
 package netring
 
 import (
+	"fmt"
 	"math"
 	"sync/atomic"
 	"syscall"
@@ -24,9 +25,11 @@ type taskCell struct {
 	taskState atomic.Uint32
 	g         uintptr // written by the translator from the POD G field at submit time
 
-	res   int32
-	flags uint32
-	err   error
+	res     int32
+	flags   uint32
+	err     error
+	opCode  opcodeType
+	isAsync bool
 }
 
 // ringTask is a lightweight Plain Old Data (POD) structure: no atomics, no
@@ -73,6 +76,32 @@ const (
 	opcodeTypeSend
 	// And further...
 )
+
+var isAsyncOp = [8]bool{opcodeTypeSend: true}
+
+// String implements fmt.Stringer.
+func (t opcodeType) String() string {
+	switch t {
+	case opcodeTypeInvalid:
+		return "Invalid"
+	case opcodeTypeReleaseBuffer:
+		return "ReleaseBuffer"
+	case opcodeTypeTimer:
+		return "Timer"
+	case opcodeTypeAccept:
+		return "Accept"
+	case opcodeTypeClose:
+		return "Close"
+	case opcodeTypeConnect:
+		return "Connect"
+	case opcodeTypeRecv:
+		return "Recv"
+	case opcodeTypeSend:
+		return "Send"
+	default:
+		return fmt.Sprintf("opcodeType(%d)", t)
+	}
+}
 
 // noWaiterTaskID marks SQEs nobody waits for: distinct from the periodic-timer
 // id and above the taskslots sysIds boundary, so an accidental slots.Del on it

@@ -12,7 +12,7 @@ import (
 // transient, the caller may retry Accept.
 func (nr *NetRing) Accept(listenFD int) (int32, error) {
 	if listenFD < 0 {
-		return 0, beer.Newf("accept: invalid descriptor %d, expected a non-negative one", listenFD)
+		return 0, beer.Newf("invalid descriptor %d, expected a non-negative one", listenFD)
 	}
 
 	// Arm the cell: the arm protocol must precede the channel
@@ -37,7 +37,9 @@ func (nr *NetRing) Accept(listenFD int) (int32, error) {
 	// FIFO in the SQ. The channel send may block on
 	// backpressure; nothing can complete before the task reaches the translator,
 	// so that is fine.
-	nr.chans[listenFD&(len(nr.chans)-1)] <- task
+	if !nr.submit(task) {
+		return 0, beer.New("failed to submit task")
+	}
 
 	// Suspend until the CQ poller delivers the result. Both the slept and the
 	// never-slept paths return here with the results already in the cell.

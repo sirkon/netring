@@ -31,6 +31,7 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 	// channel send with no exceptions, otherwise the poller could race a
 	// half-armed cell.
 	cell := nr.taskCell()
+	cell.opCode = opcodeTypeRecv
 
 	// 4. Build the POD. Recv is address-less: Addr and Offset
 	// stay zero, the kernel picks the buffer at completion time. BGID IS the
@@ -50,7 +51,9 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 	// block on backpressure; nothing can complete before the task reaches the
 	// translator, so that is fine. fd was validated >= 0
 	// above, so the modulo cannot be negative.
-	nr.chans[fd&(len(nr.chans)-1)] <- task
+	if !nr.submit(task) {
+		return nil, beer.New("failed to submit task")
+	}
 
 	// 6. Suspend until the CQ poller delivers the result. Both the slept and
 	// the never-slept paths return here with the result already in the cell.
@@ -125,5 +128,6 @@ func (nr *NetRing) ReleaseBuffer(sizeClass SizeClass, view []byte) {
 		BGID:    uint16(sizeClass),
 		Payload: unsafe.Pointer(unsafe.SliceData(view)),
 	}
-	nr.chans[0] <- task
+
+	nr.submit(task)
 }

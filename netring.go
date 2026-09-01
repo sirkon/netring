@@ -3,6 +3,7 @@ package netring
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sirkon/blog"
 	"github.com/sirkon/blog/beer"
@@ -16,17 +17,28 @@ type NetRing struct {
 	logger *blog.Logger
 
 	slots *taskslots.Slots[*taskCell] // arena stores cell pointers, see 030 section 9
-	chans []chan ringTask
 
 	pbrs []*iouring.ProvidedBufferRing // indexed by SizeClass value (== bgid)
 	pool sync.Pool                     // *taskCell recycling
 
+	fallbackChan   chan ringTask
+	barrier        atomic.Uint64 // [active:1 | epoch:63]
+	finishedPushes atomic.Uint64
+	ticketTail     atomic.Uint32 // see §3.2: 32-bit domain
+
+	failedSockets [8192]uint64
+
 	timerTask chan struct{}
 	stop      chan struct{}
-	// translateDone is closed by the translator on return, so Stop can prove
+	// fallbackLoopStopped is closed by the translator on return, so Stop can prove
 	// the translator is gone before its shared memory is torn down.
-	translateDone chan struct{}
+	fallbackLoopStopped chan struct{}
 }
+
+const (
+	statusFallbackActive uint64 = 1 << 63
+	epochMask            uint64 = ^statusFallbackActive
+)
 
 // New creates io_uring and envelope over it.
 func New(entries uint32, logger *blog.Logger, options ...OptionSetter) (*NetRing, error) {
@@ -67,22 +79,19 @@ func New(entries uint32, logger *blog.Logger, options ...OptionSetter) (*NetRing
 		r:      ring,
 		logger: logger,
 
-		slots: opts.slots,
-		chans: make([]chan ringTask, opts.tasksChanShards),
-		pbrs:  make([]*iouring.ProvidedBufferRing, sizeClassesCount),
+		slots:        opts.slots,
+		fallbackChan: make(chan ringTask, opts.tasksChanBuffer),
+		pbrs:         make([]*iouring.ProvidedBufferRing, sizeClassesCount),
 		pool: sync.Pool{
 			New: func() any { return new(taskCell) },
 		},
 
-		timerTask:     make(chan struct{}, 1),
-		stop:          make(chan struct{}),
-		translateDone: make(chan struct{}),
-	}
-	for i := range nr.chans {
-		nr.chans[i] = make(chan ringTask, opts.tasksChanBuffer)
+		timerTask:           make(chan struct{}, 1),
+		stop:                make(chan struct{}),
+		fallbackLoopStopped: make(chan struct{}),
 	}
 
-	go nr.translate()
+	go nr.fallbackLoop()
 
 	return nr, nil
 }

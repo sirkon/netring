@@ -130,27 +130,14 @@ const (
 	requestsNo        = 100_000
 )
 
-// sendAll loops on partial accepts: io_uring SEND (like send(2)) may return
-// fewer bytes than submitted; Go's net.Conn.Write hides this loop internally,
-// the netring client must do it itself. It has a single error-return site,
-// so it returns bare (Rcvd -> Rtrd) and the caller's wrap provides the
-// annotation.
-func sendAll(nr *netring.NetRing, fd int, data []byte) error {
-	for len(data) > 0 {
-		n, err := nr.Send(fd, data)
-		if err != nil {
-			return err
-		}
-		data = data[n:]
-	}
-	return nil
-}
-
 // runWorkload is the errgroup with the sender and receiver workers, watching
 // egCtx for cancellation like stdlibClient.
 func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.Logger) error {
 	sequences := sync.Map{}
-	var requester testprotocol.RequestBuilder
+	requester, err := testprotocol.New(requestsNo)
+	if err != nil {
+		return beer.Wrap(err, "create requester")
+	}
 
 	egg, egCtx := errgroup.WithContext(ctx)
 
@@ -167,13 +154,13 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 			sequenceID, clientTime, payload := requester.Request()
 			sequences.Store(sequenceID, clientTime)
 
-			if err := sendAll(nr, fd, payload); err != nil {
+			if _, err := nr.Send(fd, payload); err != nil {
 				return beer.Wrap(err, "send request").Uint64("sequence-id", sequenceID)
 			}
 		}
 
-		if err := sendAll(nr, fd, requester.RequestStop()); err != nil {
-			return beer.Wrap(err, "send stop request")
+		if _, err := nr.Send(fd, requester.RequestStop()); err != nil {
+			return beer.Wrap(err, "send stop request").Uint64("sequence-id", 0)
 		}
 
 		logger.Info(nil, "sent all requests")
@@ -189,6 +176,7 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 		// calls: views and frames are not 1:1.
 		var carry []byte
 		var processed int
+		deletedSequences := map[uint64]struct{}{}
 
 		for processed < requestsNo {
 			select {
@@ -225,6 +213,9 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 
 				clientTimeBoxed, ok := sequences.Load(sequenceID)
 				if !ok {
+					if _, ok := deletedSequences[sequenceID]; ok {
+						return beer.Newf("server sent deleted sequence id %d again", sequenceID)
+					}
 					return beer.Newf("unknown sequence ID %d in response", sequenceID)
 				}
 
@@ -236,6 +227,7 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 				}
 
 				sequences.Delete(sequenceID)
+				deletedSequences[sequenceID] = struct{}{}
 			}
 			carry = append(carry[:0], work...)
 		}

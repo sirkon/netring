@@ -38,7 +38,10 @@ func stdlibClient(ctx context.Context, logger *blog.Logger, barrier chan struct{
 	}
 
 	sequences := sync.Map{}
-	var requester testprotocol.RequestBuilder
+	requester, err := testprotocol.New(requestsNo)
+	if err != nil {
+		return err
+	}
 
 	egg, egCtx := errgroup.WithContext(ctx)
 

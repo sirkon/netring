@@ -21,9 +21,9 @@ func (nr *NetRing) Stop() error {
 	// after and no one else writes them.
 	close(nr.stop)
 
-	// 2. The translator is provably gone before its shared memory (pbuf ring
+	// 2. The fallback is provably gone before its shared memory (pbuf ring
 	// tails) is touched.
-	<-nr.translateDone
+	<-nr.fallbackLoopStopped
 
 	// 3. Unregister every provisioned ring; failures end their lifecycle here
 	// and are logged (ERRORS.md rules 2, 3, 7).
