@@ -76,7 +76,7 @@ func stdlibClient(ctx context.Context, logger *blog.Logger, barrier chan struct{
 	})
 
 	egg.Go(func() error {
-		reader := bufio.NewReader(conn)
+		reader := bufio.NewReaderSize(conn, 1<<15)
 		buf := make([]byte, 21)
 
 		for range requestsNo {

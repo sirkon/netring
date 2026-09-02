@@ -141,14 +141,21 @@ func (s *Slots[T]) Add(v T) uint64 {
 // Del is executed inside the CQ Poller thread.
 // 100% Lock-free and atomic-free on the poller side.
 func (s *Slots[T]) Del(idx uint64) {
-	switch {
-	case idx > sysIds:
-		return
-	case idx >= s.cap:
-		// Slow Path: Protect fallback map operations with the mutex
+	if idx >= s.cap {
+		if idx > sysIds {
+			// System task (NOP): nothing to release, fallback map is untouched.
+			return
+		}
+
+		// Slow Path: Protect fallback map operations with the mutex.
+		// A fallback task never occupies a ring slot, so there is no poller
+		// bit to set and delCount must not grow: otherwise the translator's
+		// saturation gate (free|(delCount-lastDelCount)) would see phantom
+		// pending releases and spin forever on a genuinely full ring.
 		s.mu.Lock()
 		delete(s.fallback, idx)
 		s.mu.Unlock()
+		return
 	}
 
 	wordIdx := idx >> 6

@@ -17,7 +17,6 @@ func (r *IOUring) ExpectRecv(fd int32, bgid uint16, maxLen uint32, slotIdx uint6
 	sqe.BufIndex = bgid                // the C union field is buf_group here
 	sqe.Len = maxLen
 	sqe.UserData = slotIdx
-	sqe.Priority = ioUringRecvSendBundle
 
 	return r.Push(sqe)
 }

@@ -58,11 +58,11 @@ func netringClient(ctx context.Context, logger *blog.Logger, barrier chan struct
 
 	// Response frames are 21 bytes; the 128 byte tiny class holds up to 6
 	// frames per view, so capacity 4 is ample for one outstanding Recv.
-	if err := nr.RegisterBufferRing(netring.SizeClassTiny, 4); err != nil {
+	if err := nr.RegisterBufferRing(netring.SizeClassTiny, 16384); err != nil {
 		return beer.Wrap(err, "provision tiny buffer ring")
 	}
 
-	if err := nr.RegisterBufferRing(netring.SizeClassHuge, 1024); err != nil {
+	if err := nr.RegisterBufferRing(netring.SizeClassBig, 16384); err != nil {
 		return beer.Wrap(err, "provision huge buffer ring")
 	}
 
@@ -193,7 +193,7 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 			default:
 			}
 
-			view, err := nr.Recv(fd, netring.SizeClassHuge)
+			view, err := nr.Recv(fd, netring.SizeClassBig)
 			if errors.Is(err, syscall.ENOBUFS) {
 				continue // ring was empty; data stays queued
 			}
@@ -207,7 +207,7 @@ func runWorkload(ctx context.Context, nr *netring.NetRing, fd int, logger *blog.
 			// Copy out before releasing the loan...
 			work := carry
 			work = append(work, view...)
-			nr.ReleaseBuffer(netring.SizeClassHuge, view) // ...then hand the kernel buffer back
+			nr.ReleaseBuffer(netring.SizeClassBig, view) // ...then hand the kernel buffer back
 
 			for len(work) >= responseFrameSize && processed < requestsNo {
 				frame := work[:responseFrameSize]

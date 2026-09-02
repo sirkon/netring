@@ -38,7 +38,7 @@ func (nr *NetRing) Recv(fd int, sizeClass SizeClass) ([]byte, error) {
 	task := ringTask{
 		Opcode:  opcodeTypeRecv,
 		Addr:    0,
-		Len:     0,
+		Len:     capacity,
 		BGID:    uint16(sizeClass),
 		Offset:  0,
 		Ctx:     cell,
